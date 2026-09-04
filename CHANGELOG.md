@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added a reviewer-gated, credential-isolated AWS Linux image qualification workflow with exact-candidate deployment, transactional rollback proof, and independent zero-residue recovery. [PR 1775](https://github.com/openclaw/crabbox/pull/1775). Thanks @vincentkoc.
 - Skip unnecessary APT translation, AppStream, and command-not-found downloads during minimal Linux bootstrap while preserving required package indexes, signature checks, and later operator defaults. [PR 1794](https://github.com/openclaw/crabbox/pull/1794). Thanks @steipete.
 - Report the correct install, build, or test failure stage from supported phase markers, preserving original exit codes and keeping later artifact-collection failures separate. [PR 1795](https://github.com/openclaw/crabbox/pull/1795). Thanks @steipete.
 - Restore current Tenki CLI inventory and legacy-claim recovery, and retain ownership claims until the exact session acknowledges termination; obsolete workspace/project settings now give migration guidance before creating a lease. [PR 1741](https://github.com/openclaw/crabbox/pull/1741). Thanks @eddiewang.
