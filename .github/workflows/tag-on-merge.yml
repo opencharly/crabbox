@@ -72,6 +72,7 @@ jobs:
             }
             const pr = prs[0];
             const deadline = Date.now() + Number(process.env.READINESS_WINDOW_MS);
+            const MS_PER_MINUTE = 60000;   // named: milliseconds in a minute
             while (Date.now() < deadline) {
               const { data: p } = await github.rest.pulls.get({
                 ...context.repo, pull_number: pr.number,
@@ -82,7 +83,7 @@ jobs:
               }
               await new Promise((r) => setTimeout(r, Number(process.env.POLL_INTERVAL_MS)));
             }
-            core.info(`PR #${pr.number} not merged within ${Number(process.env.READINESS_WINDOW_MS) / 60000}m — sweep still runs; next validator completion self-heals`);
+            core.info(`PR #${pr.number} not merged within ${Number(process.env.READINESS_WINDOW_MS) / MS_PER_MINUTE}m — sweep still runs; next validator completion self-heals`);
 
   tag:
     if: >
