@@ -1814,6 +1814,12 @@ if has_provider local-container || has_provider docker || has_provider container
   provider_smoke local-container --ttl 15m --idle-timeout 5m
 fi
 
+# has_provider is a literal comma-list match and does not resolve aliases, so
+# both the canonical name and the alias are named explicitly.
+if has_provider containerd || has_provider nerdctl; then
+  "$root/scripts/live-containerd-smoke.sh"
+fi
+
 if has_provider docker-sandbox; then
   "$root/scripts/live-docker-sandbox-smoke.sh"
 fi

@@ -155,7 +155,7 @@ hermetic lifecycle tests, `scripts/live-smoke.sh`, dedicated live runners, and
 `//go:build smoke` tests. Regenerate it with
 `node scripts/generate-provider-matrix.mjs`; docs CI rejects drift.
 
-Current coverage: 83 providers; 11 with convention-named hermetic lifecycle tests, 61 with a live runner, 8 with tagged Go smoke tests, and 20 with none of those lifecycle surfaces.
+Current coverage: 84 providers; 12 with convention-named hermetic lifecycle tests, 62 with a live runner, 8 with tagged Go smoke tests, and 20 with none of those lifecycle surfaces.
 
 | Provider | Hermetic lifecycle | Live runner | Tagged Go smoke |
 | --- | --- | --- | --- |
@@ -179,6 +179,7 @@ Current coverage: 83 providers; 11 with convention-named hermetic lifecycle test
 | [cloudflare-sandbox](../providers/cloudflare-sandbox.md) | — | — | — |
 | [coder](../providers/coder.md) | — | matrix | — |
 | [codesandbox](../providers/codesandbox.md) | — | dedicated | — |
+| [containerd](../providers/containerd.md) | yes (`containerd`) | dedicated + matrix | — |
 | [crownest](../providers/crownest.md) | — | dedicated | — |
 | [cua](../providers/cua.md) | — | dedicated + matrix | — |
 | [cubesandbox](../providers/cubesandbox.md) | — | — | — |

@@ -215,6 +215,7 @@ type Config struct {
 	localContainerRuntimeExplicit bool
 	localContainerImageExplicit   bool
 	localContainerRootExplicit    bool
+	Containerd                    ContainerdConfig
 	AppleContainer                AppleContainerConfig
 	appleContainerImageExplicit   bool
 	AppleVM                       AppleVMConfig
@@ -1719,6 +1720,7 @@ func baseConfig() Config {
 		},
 		Sprites:        defaultSpritesConfig(),
 		LocalContainer: initialLocalContainerConfig(containerImage),
+		Containerd:     defaultContainerdConfig(),
 		AppleContainer: initialAppleContainerConfig(containerImage),
 		AppleVM:        initialAppleVMConfig(osImageSpecs[osImage].AppleVMImage, osImageSpecs[osImage].AppleVMSHA256),
 		MXC:            defaultMXCConfig(),
@@ -1861,6 +1863,7 @@ type fileConfig struct {
 	Semaphore                *fileSemaphoreConfig                `yaml:"semaphore,omitempty"`
 	Sprites                  *fileSpritesConfig                  `yaml:"sprites,omitempty"`
 	LocalContainer           *fileLocalContainerConfig           `yaml:"localContainer,omitempty"`
+	Containerd               *fileContainerdConfig               `yaml:"containerd,omitempty"`
 	AppleContainer           *fileAppleContainerConfig           `yaml:"appleContainer,omitempty"`
 	AppleVM                  *fileAppleVMConfig                  `yaml:"appleVM,omitempty"`
 	AppleVZLegacy            *fileAppleVMConfig                  `yaml:"appleVZ,omitempty"`
@@ -3566,6 +3569,9 @@ func applyFileConfigWithTrustAndProviderSource(cfg *Config, file fileConfig, tru
 			return err
 		}
 	}
+	if err := applyContainerdFileConfig(cfg, file.Containerd, inputSource); err != nil {
+		return err
+	}
 	{
 		applied := cfg.AppleContainer.applyFile(file.AppleContainer)
 		recordConfigInput(cfg, "apple-container", inputSource, applied.InputAccepted)
@@ -4876,6 +4882,9 @@ func applyEnv(cfg *Config) error {
 		if err != nil {
 			return err
 		}
+	}
+	if err := applyContainerdEnvironmentConfig(cfg); err != nil {
+		return err
 	}
 	{
 		applied := cfg.AppleContainer.applyEnv()

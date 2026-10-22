@@ -6,8 +6,8 @@ Read when:
 - debugging provider-specific provisioning, sync, or command execution;
 - changing provider registration, flags, config, or backend behavior.
 
-Crabbox's catalog contains **81 built-in providers plus the `external` plugin
-contract** (82 entries). The compiled target lists include Linux, macOS, native
+Crabbox's catalog contains **83 built-in providers plus the `external` plugin
+contract** (84 entries). The compiled target lists include Linux, macOS, native
 Windows, WSL2, and a Worker-module runtime. Support varies by provider: a catalog
 entry is not a promise of credentials, capacity, desktop access, or arbitrary
 shell execution. Start with `crabbox providers recommend`, then inspect the
@@ -97,7 +97,7 @@ selection metadata. Regenerate it with `node scripts/generate-provider-matrix.mj
 `scripts/check-docs.sh` fails when provider registration, metadata, docs paths, or
 this generated table drift.
 
-Current built-in surface: 83 providers (47 SSH lease, 32 delegated run, 4 service control).
+Current built-in surface: 84 providers (48 SSH lease, 32 delegated run, 4 service control).
 
 Access terms:
 
@@ -127,6 +127,7 @@ Access terms:
 | [cloudflare-sandbox](cloudflare-sandbox.md) | built-in; `delegated-run` · delegated-sandbox | No SSH; `archive-sync` · direct only; features: `archive-sync`, `cleanup`, `run-session` | `linux`; Cloudflare Sandbox bridge | `cloud`; GPU: no | Cloudflare Sandbox bridge; sandbox delete | Cloudflare Sandbox Linux command execution through a bridge | Requires a configured bridge URL; no SSH, browser, Tailscale, URL sessions, mounts, or checkpoints |
 | [coder](coder.md) | built-in; `ssh-lease` · direct-cloud | Crabbox-managed SSH; `crabbox-sync` · direct only; features: `ssh`, `crabbox-sync`, `cleanup` | `linux`; Coder workspace | `provider-managed`; GPU: unknown | Coder CLI; workspace stop or delete | Coder-backed Linux workspace over SSH proxy | Requires the coder CLI, login, template access, and workspace quota |
 | [codesandbox](codesandbox.md) (`csb`, `code-sandbox`) | built-in; `delegated-run` · delegated-sandbox | No SSH; `archive-sync` · direct only; features: `archive-sync`, `cleanup`, `pause-resume`, `run-session` | `linux`; CodeSandbox SDK sandbox | `provider-managed`; GPU: no | CodeSandbox; sandbox delete | Managed CodeSandbox Linux development environments | Requires env-only SDK auth and a local Node bridge |
+| [containerd](containerd.md) (`nerdctl`) | built-in; `ssh-lease` · local-runtime | Crabbox-managed SSH; `crabbox-sync` · direct only; features: `ssh`, `crabbox-sync`, `cleanup`, `run-session`, `cache-volume`, `desktop`, `browser`, `code`, `tailscale`, `pause-resume`, `claim-exec`, `fixed-current-repo-stop` | `linux`; containerd via nerdctl (crun, runc, or krun) | `local`; GPU: optional | Crabbox; label-filtered container delete | containerd leases on the local machine or a remote Linux host, including krun microVM guests | Requires nerdctl and a reachable containerd daemon; remote mode also needs SSH and python3 for port allocation |
 | [crownest](crownest.md) | built-in; `delegated-run` · delegated-sandbox | No SSH; `archive-sync` · direct only; features: `archive-sync`, `cleanup`, `run-session` | `linux`; Crownest Workspace Run sandbox | `cloud`; GPU: no | Crownest; sandbox delete | Hosted agent-ready Workspace Runs with archive sync and durable evidence | No SSH, env forwarding, artifacts, proof, downloads, or custom Dockerfile templates yet |
 | [cua](cua.md) | built-in; `service-control` · service-control | No SSH; `none` · direct only; features: none | `linux`, `macos`, `windows/normal`; CUA cloud sandbox inventory | `provider-managed`; GPU: unknown | CUA read-only inventory; not exposed | Experimental CUA diagnostics and existing-sandbox inspection | Experimental and read-only; all remote lifecycle mutations fail closed until upstream exposes safe creation and deletion ownership primitives |
 | [cubesandbox](cubesandbox.md) | built-in; `delegated-run` · delegated-sandbox | No SSH; `archive-sync` · direct only; features: `archive-sync`, `run-session` | `linux`; CubeSandbox KVM MicroVM | `self-hosted`; GPU: unknown | Crabbox and Cube API; claimed sandbox delete | Self-hosted E2B-compatible MicroVM command execution | Requires a CubeSandbox deployment, ready template ID, and reachable CubeProxy data plane |

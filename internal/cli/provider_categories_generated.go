@@ -23,6 +23,7 @@ var benchmarkProviderCategories = map[string]string{
 	"cloudflare-sandbox":         "delegated-sandbox",
 	"coder":                      "direct-cloud",
 	"codesandbox":                "delegated-sandbox",
+	"containerd":                 "local-runtime",
 	"crownest":                   "delegated-sandbox",
 	"cua":                        "service-control",
 	"cubesandbox":                "delegated-sandbox",

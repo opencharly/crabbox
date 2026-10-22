@@ -23,6 +23,7 @@ var canonicalConfigInputOwners = [...]configInputOwner{
 	"cloudflare-dynamic-workers",
 	"cloudflare-sandbox",
 	"coder",
+	"containerd",
 	"codesandbox",
 	"crownest",
 	"cua",

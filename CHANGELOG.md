@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- containerd: add the `containerd` SSH-lease provider (alias `nerdctl`) with daemon identity and rootless-mode verification, argv builders for crun/runc/krun, private `/crabbox` inputs, pause/resume, port reads, doctor checks, and the shared `containerbootstrap` script that `local-container` also uses. Native `containerd-commit`/CRIU checkpoints and port publishing are the next seam. [Issue 2](https://github.com/opencharly/crabbox/issues/2).
+
 ## 0.79.1 - 2026-10-20
 
 ### Highlights
