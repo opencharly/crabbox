@@ -20,11 +20,12 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
 
 # A called workflow can only hold a permission its caller also grants, so every scope the
-# reusable needs is declared on both surfaces.
+# reusable needs is declared on both surfaces. There is deliberately NO `actions: write`:
+# the per-PR `concurrency: cancel-in-progress` below is a workflow feature GitHub applies
+# itself, and this job runs no steps that could use the scope.
 permissions:
   contents: write
   pull-requests: write
-  actions: write
   issues: write
   checks: read
 

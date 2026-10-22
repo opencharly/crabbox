@@ -31,7 +31,7 @@ permissions:
 jobs:
   verify:
     name: Verify pinned Canonical source
-    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Check out
