@@ -56,17 +56,6 @@ func (r commandRunner) run(ctx context.Context, args []string, stdout, stderr io
 	return r.rt.Exec.Run(ctx, core.LocalCommandRequest{Name: "ssh", Args: r.remoteArgv(quoteArgv(args)), Stdout: stdout, Stderr: stderr})
 }
 
-// runInput executes a local or remote command with caller-supplied stdin. It is
-// used to write inputs on the remote host without putting file contents on argv.
-func (r commandRunner) runInput(ctx context.Context, args []string, stdin string, stdout, stderr io.Writer) (core.LocalCommandResult, error) {
-	req := core.LocalCommandRequest{Name: "nerdctl", Args: args, Stdin: strings.NewReader(stdin), Stdout: stdout, Stderr: stderr}
-	if r.remote() {
-		req.Name = "ssh"
-		req.Args = r.remoteArgv(quoteArgv(args))
-	}
-	return r.rt.Exec.Run(ctx, req)
-}
-
 // runShell executes a POSIX shell command on the containerd host. Remote mode
 // keeps the command on the SSH command line (shell-quoted), not on nerdctl.
 func (r commandRunner) runShell(ctx context.Context, script string, stdout, stderr io.Writer) (core.LocalCommandResult, error) {
@@ -147,10 +136,6 @@ func (r commandRunner) globalArgs() []string {
 		args = append(args, "--address", address)
 	}
 	return args
-}
-
-func (r commandRunner) nerdctl(ctx context.Context, args ...string) (core.LocalCommandResult, error) {
-	return r.run(ctx, append(r.globalArgs(), args...), nil, nil)
 }
 
 func (r commandRunner) nerdctlOutput(ctx context.Context, args ...string) (core.LocalCommandResult, error) {

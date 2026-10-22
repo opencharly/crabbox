@@ -76,15 +76,6 @@ func findArg(args []string, want ...string) bool {
 	return false
 }
 
-func containsArg(args []string, want string) bool {
-	for _, arg := range args {
-		if arg == want {
-			return true
-		}
-	}
-	return false
-}
-
 func TestBuildRunArgs(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
