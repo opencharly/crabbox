@@ -941,3 +941,16 @@ PY
 `},
 	{"Build", "", "go build -trimpath -o /tmp/crabbox ./cmd/crabbox"},
 }
+
+// TestCIForkRunnerSelection pins the Docker jobs' runner expression. The general
+// expectation is pinned by the existing tests; these two jobs are the only ones that must
+// select the Docker-capable pool, and an unpinned fallback would silently send them to a
+// runner without Docker.
+func TestCIForkRunnerSelection(t *testing.T) {
+	document := readCIGoWorkflow(t)
+	for _, id := range []string{"worker", "worker-postgres-recovery"} {
+		if got := ciGoScalar(ciGoJob(document, id), "runs-on"); got != "${{ vars.CI_DOCKER_RUNNER_LABEL || 'opencharly-ubuntu' }}" {
+			t.Errorf("%s runs-on = %q, want the Docker runner expression", id, got)
+		}
+	}
+}
