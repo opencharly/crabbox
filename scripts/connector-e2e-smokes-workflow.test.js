@@ -62,7 +62,7 @@ test("SSH localhost asserts amd64 only on its hosted x64 lifecycle row", () => {
   const rows = [...workflow.matchAll(/^ {10}- name: ssh-localhost\n((?: {12}[^\n]*\n)*)/gm)];
   assert.equal(rows.length, 1, "keep one existing SSH localhost row");
   const row = rows[0][1];
-  assert.match(row, /^ {12}runner: ubuntu-latest$/m);
+  assert.match(row, /^ {12}runner: opencharly$/m);
   assert.match(row, /^ {12}build-cli: true$/m);
   assert.match(
     row,

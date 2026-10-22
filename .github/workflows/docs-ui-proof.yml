@@ -19,7 +19,7 @@ permissions:
 jobs:
   proof:
     name: Render visual proof
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 12
 
     steps:
@@ -49,7 +49,7 @@ jobs:
           grep -q 'Open command reference' "$page"
 
       - name: Install pinned browser
-        run: ./scripts/node_modules/.bin/playwright install --with-deps chromium
+        run: ./scripts/node_modules/.bin/playwright install chromium
 
       - name: Render and exercise browser proof
         run: node scripts/docs-ui-proof.mjs

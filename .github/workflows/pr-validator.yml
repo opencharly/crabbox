@@ -1,0 +1,56 @@
+# FORK-ONLY ENTRY POINT — the one per-repo validator caller in the org.
+#
+# WHY THIS FILE EXISTS HERE AND NOWHERE ELSE. The org ships ONE required workflow
+# (opencharly/.github/.github/workflows/org-wide-pr-validator-required.yml) through ONE
+# org ruleset, and that ruleset deliberately EXCLUDES forks: while it targets a fork, its
+# `workflows` rule makes `gh repo sync` fail with
+#   Required workflow 'charly/pr-validator, charly/pr-validator' is not satisfied
+# (measured on opencharly/openclaw, opencharly/.github#179). This repository is a
+# vendored upstream fork that advances by exactly that sync, so it must stay outside the
+# org ruleset — and therefore needs its own `pull_request` entry point to produce the
+# same check.
+#
+# It is a CALLER, not a second gate: the engine, the rulebook prompt, the verdict
+# taxonomy and every AI_REVIEW_* knob stay in opencharly/.github (R2). Nothing is
+# re-implemented here.
+name: charly/pr-validator
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# A called workflow can only hold a permission its caller also grants, so every scope the
+# reusable needs is declared on both surfaces.
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+  issues: write
+  checks: read
+
+# ONE run per PR, exactly as the org required workflow does it: a re-push cancels the
+# in-flight run, so the head can never carry duplicate same-name `validate / validate`
+# check runs (a stale non-passing duplicate keeps the merge gate blocked).
+concurrency:
+  group: pr-validator-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: validate
+    # SAME-REPO only. This repository IS a fork, so the predicate must be "is the head repo
+    # the same repository as the base", never "is this repository a fork" (the latter is
+    # true for every PR here and would skip the gate entirely).
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    # PINNED to a full commit SHA, not `@main`: this repository's own gate
+    # (`scripts/workflow_action_pins.go`) refuses a mutable action reference, and that is
+    # a security posture worth keeping. The verdict LOGIC is therefore frozen at this
+    # commit while the prompt and the engine pin stay live org variables
+    # (`AI_REVIEW_PROMPT`, `CHARLY_VERSION`). Bump deliberately — see .github/FORK.md.
+    uses: opencharly/.github/.github/workflows/pr-validator.yml@8e0bf3c3d8d66ed9fe61439424caef9a8fed5928 # main 2026-10-22
+    with:
+      pr-number: ${{ github.event.pull_request.number }}
+      ai_review_provider: ${{ vars.AI_REVIEW_PROVIDER }}
+      ai_review_model: ${{ vars.AI_REVIEW_MODEL }}
+      ai_review_base_url: ${{ vars.AI_REVIEW_BASE_URL }}
+    secrets: inherit

@@ -19,7 +19,7 @@ env:
 jobs:
   extension:
     name: Validate package and execute tasks
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 10
 
     steps:

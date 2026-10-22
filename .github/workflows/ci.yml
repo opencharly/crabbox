@@ -24,7 +24,7 @@ jobs:
     name: Go test
     needs: [go-test-core, go-test-cli]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 5
     steps:
       - name: Require all race shards
@@ -38,7 +38,7 @@ jobs:
 
   go-test-cli:
     name: Go CLI shard ${{ matrix.shard }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -70,7 +70,7 @@ jobs:
 
   go-test-core:
     name: Go core
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 30
 
     steps:
@@ -164,7 +164,7 @@ jobs:
 
   go-modules:
     name: Go modules
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 30
 
     steps:
@@ -184,7 +184,7 @@ jobs:
 
   go-coverage-cli:
     name: Go CLI coverage shard ${{ matrix.shard }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -216,7 +216,7 @@ jobs:
 
   go-coverage-core:
     name: Go non-CLI coverage
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 30
 
     steps:
@@ -251,7 +251,7 @@ jobs:
     name: Go coverage
     needs: [go-coverage-core, go-coverage-cli]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 30
     steps:
       - name: Require all coverage producers
@@ -288,7 +288,7 @@ jobs:
     name: Go
     needs: [go-test, go-modules, go-coverage]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 30
 
     steps:
@@ -305,7 +305,7 @@ jobs:
 
   go-install:
     name: Direct Go install
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 20
 
     steps:
@@ -326,7 +326,7 @@ jobs:
     name: Windows Pond Mesh Cancellation
     needs: [windows-native-contracts, windows-powershell-architecture]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 5
     steps:
       - name: Require all native Windows contracts
@@ -533,7 +533,7 @@ jobs:
 
   connector-lifecycles:
     name: Connector Lifecycles
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 15
 
     steps:
@@ -651,7 +651,7 @@ jobs:
 
   worker:
     name: Worker
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_DOCKER_RUNNER_LABEL || 'opencharly-ubuntu' }}
     timeout-minutes: 30
 
     steps:
@@ -709,7 +709,7 @@ jobs:
 
   worker-postgres-recovery:
     name: AWS recovery PostgreSQL integration
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_DOCKER_RUNNER_LABEL || 'opencharly-ubuntu' }}
     timeout-minutes: 10
     services:
       postgres:
@@ -746,7 +746,7 @@ jobs:
 
   scripts:
     name: Scripts
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 20
 
     steps:
@@ -788,7 +788,7 @@ jobs:
 
   docs:
     name: Docs
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 5
 
     steps:
