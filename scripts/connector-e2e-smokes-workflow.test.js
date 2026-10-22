@@ -62,7 +62,7 @@ test("SSH localhost asserts amd64 only on its hosted x64 lifecycle row", () => {
   const rows = [...workflow.matchAll(/^ {10}- name: ssh-localhost\n((?: {12}[^\n]*\n)*)/gm)];
   assert.equal(rows.length, 1, "keep one existing SSH localhost row");
   const row = rows[0][1];
-  assert.match(row, /^ {12}runner: ubuntu-latest$/m);
+  assert.match(row, /^ {12}runner: .*vars\.CI_RUNNER_LABEL.*$/m);
   assert.match(row, /^ {12}build-cli: true$/m);
   assert.match(
     row,
@@ -76,6 +76,23 @@ test("SSH localhost asserts amd64 only on its hosted x64 lifecycle row", () => {
     workflow,
     /pull_request_target:|self-hosted|^\s*(?:environment|services|container|continue-on-error):/m,
   );
+});
+
+test("container matrix rows select the Docker fleet through the org variable", () => {
+  for (const name of ["firecracker-readiness", "ssh-localhost"]) {
+    const block = workflow.match(
+      new RegExp(`- name: ${name}\\n([\\s\\S]*?)(?=\\n {10}- name:)`),
+    )?.[1];
+    assert.ok(block, `${name} row exists`);
+    assert.match(block, /^ {12}runner: .*vars\.CI_RUNNER_LABEL.*$/m);
+  }
+  for (const name of ["docker-sandbox-trust-boundary", "local-container"]) {
+    const block = workflow.match(
+      new RegExp(`- name: ${name}\\n([\\s\\S]*?)(?=\\n {10}- name:)`),
+    )?.[1];
+    assert.ok(block, `${name} row exists`);
+    assert.match(block, /^ {12}runner: .*vars\.CI_DOCKER_RUNNER_LABEL.*$/m);
+  }
 });
 
 test("pull request runs cancel superseded attempts", () => {

@@ -203,7 +203,7 @@ func checkCIGoContract(document *yaml.Node) error {
 		}
 		fields(node, job.id, keys...)
 		require(ciGoScalar(node, "name") == job.name, "%s name changed", job.id)
-		require(ciGoScalar(node, "runs-on") == "ubuntu-latest", "%s runner changed", job.id)
+		require(ciGoScalar(node, "runs-on") == "${{ vars.CI_RUNNER_LABEL || 'opencharly' }}", "%s runner changed", job.id)
 		require(ciGoScalar(node, "timeout-minutes") == "30", "%s must retain its 30-minute cap", job.id)
 		require(ciGoField(node, "steps").Kind == yaml.SequenceNode, "%s steps must be a sequence", job.id)
 	}
@@ -297,7 +297,7 @@ func checkCIGoContract(document *yaml.Node) error {
 	}
 	coverageCLI := ciGoJob(document, "go-coverage-cli")
 	fields(coverageCLI, "CLI coverage shards", "name", "runs-on", "timeout-minutes", "strategy", "steps")
-	require(ciGoScalar(coverageCLI, "name") == "Go CLI coverage shard ${{ matrix.shard }}" && ciGoScalar(coverageCLI, "runs-on") == "ubuntu-latest" && ciGoScalar(coverageCLI, "timeout-minutes") == "30", "CLI coverage execution changed")
+	require(ciGoScalar(coverageCLI, "name") == "Go CLI coverage shard ${{ matrix.shard }}" && ciGoScalar(coverageCLI, "runs-on") == "${{ vars.CI_RUNNER_LABEL || 'opencharly' }}" && ciGoScalar(coverageCLI, "timeout-minutes") == "30", "CLI coverage execution changed")
 	coverageStrategy := ciGoField(coverageCLI, "strategy")
 	fields(coverageStrategy, "coverage strategy", "fail-fast", "matrix")
 	require(ciGoScalar(coverageStrategy, "fail-fast") == "false", "all coverage shards must finish")
@@ -368,7 +368,7 @@ func checkCIGoContract(document *yaml.Node) error {
 		fields(node, gate.id, "name", "needs", "if", "runs-on", "timeout-minutes", "steps")
 		require(ciGoScalar(node, "name") == gate.name, "%s name changed", gate.id)
 		require(ciGoScalar(node, "if") == "${{ !cancelled() }}", "%s must evaluate unless the workflow is cancelled", gate.id)
-		require(ciGoScalar(node, "runs-on") == "ubuntu-latest" && ciGoScalar(node, "timeout-minutes") == "5", "%s execution changed", gate.id)
+		require(ciGoScalar(node, "runs-on") == "${{ vars.CI_RUNNER_LABEL || 'opencharly' }}" && ciGoScalar(node, "timeout-minutes") == "5", "%s execution changed", gate.id)
 		needs := ciGoField(node, "needs")
 		require(needs.Kind == yaml.SequenceNode && len(needs.Content) == 2, "%s needs both workloads", gate.id)
 		if len(needs.Content) == 2 {
@@ -389,7 +389,7 @@ func checkCIGoContract(document *yaml.Node) error {
 	cliJob := ciGoJob(document, "go-test-cli")
 	fields(cliJob, "CLI shards", "name", "runs-on", "timeout-minutes", "strategy", "steps")
 	require(ciGoScalar(cliJob, "name") == "Go CLI shard ${{ matrix.shard }}", "CLI shard names changed")
-	require(ciGoScalar(cliJob, "runs-on") == "ubuntu-latest" && ciGoScalar(cliJob, "timeout-minutes") == "20", "CLI shard execution changed")
+	require(ciGoScalar(cliJob, "runs-on") == "${{ vars.CI_RUNNER_LABEL || 'opencharly' }}" && ciGoScalar(cliJob, "timeout-minutes") == "20", "CLI shard execution changed")
 	strategy := ciGoField(cliJob, "strategy")
 	fields(strategy, "CLI strategy", "fail-fast", "matrix")
 	require(ciGoScalar(strategy, "fail-fast") == "false", "all shards must finish")
