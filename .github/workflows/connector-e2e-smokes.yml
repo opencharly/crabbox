@@ -50,12 +50,12 @@ jobs:
       matrix:
         include:
           - name: docker-sandbox-trust-boundary
-            runner: opencharly-ubuntu
+            runner: ${{ vars.CI_DOCKER_RUNNER_LABEL || 'opencharly-ubuntu' }}
             build-cli: false
             smoke: scripts/docker-sandbox-trust-boundary-smoke.sh
 
           - name: local-container
-            runner: opencharly-ubuntu
+            runner: ${{ vars.CI_DOCKER_RUNNER_LABEL || 'opencharly-ubuntu' }}
             build-cli: true
             # Cold bootstrap allows 20m; leave room for native E2E and cleanup.
             timeout-minutes: 40
@@ -74,7 +74,7 @@ jobs:
           # `classification=validation_failed` (malformed doctor output)
           # still fails the row.
           - name: firecracker-readiness
-            runner: opencharly
+            runner: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
             build-cli: true
             smoke: |
               status=0
@@ -90,7 +90,7 @@ jobs:
               exit "$status"
 
           - name: ssh-localhost
-            runner: opencharly
+            runner: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
             build-cli: true
             smoke: CRABBOX_ARCH=amd64 CRABBOX_BIN="$PWD/bin/crabbox" scripts/live-ssh-localhost-smoke.sh
 
