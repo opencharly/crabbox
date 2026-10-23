@@ -126,6 +126,9 @@ test("the containerd row pins its tools, gates xt_multiport loudly, and rejects 
   assert.match(install, /if ! command -v runc >\/dev\/null 2>&1; then\n            sudo apt-get install -y runc\n          fi/);
   assert.doesNotMatch(install, /apt-get install -y containerd runc/, "must not force the Ubuntu containerd package over Docker's containerd.io");
   assert.match(install, /systemctl enable --now containerd/);
+  assert.match(install, /if ! sudo modprobe xt_multiport 2>\/dev\/null; then/);
+  assert.match(install, /apt-get install -y "linux-modules-extra-\$\(uname -r\)"/);
+  assert.match(install, /sudo modprobe xt_multiport 2>\/dev\/null \|\| true/);
   assert.match(install, /-C \/opt\/cni\/bin/);
   assert.match(install, /sha256sum --check --strict/);
 

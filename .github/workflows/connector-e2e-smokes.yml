@@ -182,11 +182,20 @@ jobs:
           sudo mkdir -p /opt/cni/bin
           sudo tar -xzf "$cni_archive" -C /opt/cni/bin
 
-          # The preflight below is the loud gate. Load the module first so a
-          # kernel that HAS xt_multiport is deterministic instead of racing the
-          # first `iptables -m multiport` invocation; a kernel that lacks it
-          # still fails the preflight.
-          sudo modprobe xt_multiport 2>/dev/null || true
+          # Ephemeral CI host, persistent artefact: the workflow itself is the
+          # durable fix, so providing/loading the module here is NOT the
+          # rulebook's forbidden "works-until-reboot" workaround (that rule
+          # targets a live host whose manual change evaporates on reboot).
+          # Try the module, install the running kernel's extra-modules package
+          # once if it is missing, then retry. The hard assertion in the next
+          # step is unchanged: if the module genuinely cannot be provided, it
+          # fails loudly naming opencharly/layer-containerd#5.
+          if ! sudo modprobe xt_multiport 2>/dev/null; then
+            sudo apt-get install -y "linux-modules-extra-$(uname -r)" >/dev/null 2>&1 || true
+            sudo modprobe xt_multiport 2>/dev/null || true
+          fi
+          # Re-check the two surfaces the assertion reads, without suppressing it.
+          sudo lsmod | grep '^xt_multiport ' || echo "xt_multiport still not loaded; the preflight will fail loudly"
 
           sudo nerdctl --version
           sudo nerdctl info --format '{{json .}}' >/dev/null
@@ -200,6 +209,7 @@ jobs:
         if: matrix.name == 'containerd'
         run: |
           if ! grep -qw multiport /proc/net/ip_tables_matches; then
+            echo "lsmod (netfilter matches): $(lsmod | grep -E '^(xt_multiport|ip_tables|nf_tables) ' || echo none)" >&2
             echo "::error::the kernel's ip_tables match list has no 'multiport'; the CNI portmap plugin cannot publish the lease SSH port (opencharly/layer-containerd#5)"
             exit 1
           fi
