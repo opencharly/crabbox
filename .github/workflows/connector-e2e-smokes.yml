@@ -631,20 +631,24 @@ jobs:
               exit 1
               ;;
           esac
-          sudo containerd config dump > "$RUNNER_TEMP/containerd.toml"
+          # `config dump` prints the RUNNING daemon's effective config, which on
+          # this image has no config file and therefore no CRI runtimes table
+          # (measured: "Configuration migrated from version 0"). The canonical
+          # v4 document is what carries the table the handler belongs under.
+          sudo containerd config default > "$RUNNER_TEMP/containerd.toml"
           python3 -I - "$RUNNER_TEMP/containerd.toml" <<'PY'
           import re
           import sys
 
           path = sys.argv[1]
           config = open(path).read()
-          match = re.search(r'^\[plugins\."([^"]+)"\.containerd\.runtimes\]', config, re.M)
+          match = re.search(r"^\s*\[plugins\.(['\"])(.+?)\1\.containerd\.runtimes\]\s*$", config, re.M)
           if not match:
               sys.exit("no CRI runtimes table in the containerd config")
-          plugin = match.group(1)
+          plugin = match.group(2)
           if plugin != "io.containerd.cri.v1.runtime":
               sys.exit("CRI plugin id is %r, want io.containerd.cri.v1.runtime" % plugin)
-          if re.search(r'^\[plugins\."%s"\.containerd\.runtimes\.krun\]' % re.escape(plugin), config, re.M):
+          if re.search(r"^\s*\[plugins\.(['\"])%s\1\.containerd\.runtimes\.krun\]\s*$" % re.escape(plugin), config, re.M):
               sys.exit("a krun handler is already declared; refusing to duplicate it")
           config += (
               "\n[plugins.'%s'.containerd.runtimes.krun]\n"
