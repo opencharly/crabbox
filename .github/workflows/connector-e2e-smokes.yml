@@ -689,7 +689,10 @@ jobs:
           echo "nerdctl_wait_rc=$wait_rc"
 
           log="$RUNNER_TEMP/krun-guest.log"
-          sudo nerdctl --namespace default logs "$name" | tee "$log"
+          # The guest console reaches nerdctl on the container's STDERR (the
+          # `[ERROR init_or_kernel]` lines are libkrun's own logger), so the
+          # evidence file must capture both streams or it is empty.
+          sudo nerdctl --namespace default logs "$name" 2>&1 | tee "$log"
           final="$(sudo nerdctl --namespace default inspect --format '{{.State.Status}}/{{.State.ExitCode}}' "$name")"
           echo "container_final=$final"
 
