@@ -3,6 +3,11 @@ package cli
 import "testing"
 
 func TestCheckpointNativeModeAndRetirementStrategyParity(t *testing.T) {
+	// The containerd provider is deliberately not registered in this test
+	// binary: its package imports internal/cli, and registering it here would
+	// also change providerMatrix() for the recommendation tests. Its capability
+	// (including --strategy process) is covered in
+	// internal/providers/containerd instead.
 	for _, tc := range []struct {
 		name, provider, coordinator    string
 		implicit, image, disk, process string
@@ -12,7 +17,6 @@ func TestCheckpointNativeModeAndRetirementStrategyParity(t *testing.T) {
 		{"broker Azure Linux", "azure", "https://coordinator.example", checkpointKindAzureOS, checkpointKindAzure, checkpointKindAzureOS, "unsupported"},
 		{"broker GCP Linux", "gcp", "https://coordinator.example", checkpointKindGCPDisk, checkpointKindGCP, checkpointKindGCPDisk, "unsupported"},
 		{"Docker", "local-container", "", checkpointKindDockerCommit, "unsupported", "unsupported", "unsupported"},
-		{"containerd", "containerd", "", checkpointKindContainerdCommit, checkpointKindContainerdCommit, "unsupported", checkpointKindContainerdCRIU},
 	} {
 		for _, strategy := range []string{"", checkpointStrategyAuto, checkpointStrategyImage, checkpointStrategyDiskSnapshot, checkpointStrategyProcess} {
 			t.Run(tc.name+"/"+blank(strategy, "default"), func(t *testing.T) {

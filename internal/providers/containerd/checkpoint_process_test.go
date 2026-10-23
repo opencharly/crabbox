@@ -89,6 +89,37 @@ func newProcessRunner() *recordingRunner {
 	return &recordingRunner{}
 }
 
+// The provider admits process only when it was explicitly requested; the
+// implicit default stays the containerd-commit image and any other explicit
+// strategy is refused rather than reinterpreted.
+func TestNativeCheckpointCapabilitySelectsTheProcessPrimitive(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		strategy string
+		explicit bool
+		wantKind string
+		wantOK   bool
+	}{
+		{name: "implicit default", strategy: "", explicit: false, wantKind: core.CheckpointKindContainerdCommit, wantOK: true},
+		{name: "explicit image", strategy: core.CheckpointStrategyImage, explicit: true, wantKind: core.CheckpointKindContainerdCommit, wantOK: true},
+		{name: "explicit process", strategy: core.CheckpointStrategyProcess, explicit: true, wantKind: core.CheckpointKindContainerdCRIU, wantOK: true},
+		{name: "explicit disk", strategy: core.CheckpointStrategyDiskSnapshot, explicit: true, wantOK: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			capability, ok := (Provider{}).NativeCheckpointCapability(core.NativeCheckpointRequest{
+				Config: processTestConfig(), Server: checkpointTestServer(), Target: checkpointTestTarget(),
+				Strategy: tc.strategy, StrategyExplicit: tc.explicit,
+			})
+			if ok != tc.wantOK {
+				t.Fatalf("ok=%v want=%v capability=%+v", ok, tc.wantOK, capability)
+			}
+			if ok && capability.Kind != tc.wantKind {
+				t.Fatalf("kind=%q want=%q", capability.Kind, tc.wantKind)
+			}
+		})
+	}
+}
+
 // The whole capture order: CRIU pre-flight, runtime restore probe, close the
 // lease's SSH sessions, then checkpoint create --leave-running. Nothing may
 // pause, stop, commit or remove the source.
