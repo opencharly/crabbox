@@ -693,13 +693,26 @@ jobs:
           final="$(sudo nerdctl --namespace default inspect --format '{{.State.Status}}/{{.State.ExitCode}}' "$name")"
           echo "container_final=$final"
 
-          grep -q 'KRUN_PROOF step=guest-boot' "$log"
-          grep -q 'KRUN_PROOF pid1_comm=systemd' "$log"
-          grep -q 'KRUN_PROOF kernel=6.12.109' "$log"
-          grep -q 'KRUN_PROOF nofile_hard=' "$log"
-          grep -q 'KRUN_PROOF stop=systemctl-poweroff' "$log"
-          test "$final" = "exited/0"
-          test "$wait_rc" -eq 0
+          check() {
+            if ! grep -qF "$1" "$log"; then
+              echo "::error::the guest log is missing: $1"
+              exit 1
+            fi
+          }
+          check 'KRUN_PROOF step=guest-boot'
+          check 'KRUN_PROOF pid1_comm=systemd'
+          check 'KRUN_PROOF pid1_cmdline=/sbin/init'
+          check 'KRUN_PROOF kernel=6.12.109'
+          check 'nofile_hard=524288'
+          check 'KRUN_PROOF stop=systemctl-poweroff'
+          if [ "$final" != "exited/0" ]; then
+            echo "::error::the container finished as $final, want exited/0"
+            exit 1
+          fi
+          if [ "$wait_rc" -ne 0 ]; then
+            echo "::error::nerdctl wait returned $wait_rc"
+            exit 1
+          fi
 
       - name: Diagnose the krun guest
         if: failure() && steps.venue.outputs.available == 'true'
