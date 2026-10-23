@@ -714,9 +714,13 @@ jobs:
           final="$(sudo nerdctl --namespace default inspect --format '{{.State.Status}}/{{.State.ExitCode}}' "$name")"
           echo "container_final=$final"
 
+          # The guest console terminates lines with CRLF; strip the CR before
+          # the anchored assertions so the line ending cannot hide a match.
+          normalized="$RUNNER_TEMP/krun-guest.norm.log"
+          tr -d '\r' < "$log" > "$normalized"
           # Anchored ERE: a trailing digit cannot satisfy any of these.
           check() {
-            if ! grep -qE "$1" "$log"; then
+            if ! grep -qE "$1" "$normalized"; then
               echo "::error::the guest log is missing: $1"
               exit 1
             fi
