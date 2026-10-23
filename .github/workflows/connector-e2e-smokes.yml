@@ -199,6 +199,11 @@ jobs:
 
           sudo nerdctl --version
           sudo nerdctl info --format '{{json .}}' >/dev/null
+          # Docker's containerd ships the `moby` namespace; the provider's
+          # uniform default is `default`. Create it so the base row can
+          # acquire. The provider's own daemon verification stays the hard
+          # check; this only makes the ephemeral host match the contract.
+          sudo nerdctl namespace create default >/dev/null 2>&1 || true
 
           # The smoke runs as root (a non-root nerdctl selects the rootless
           # daemon, not the rootful one installed here). Let root's git trust

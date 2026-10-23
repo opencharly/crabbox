@@ -128,6 +128,7 @@ test("the containerd row pins its tools, gates xt_multiport loudly, and rejects 
   assert.match(install, /systemctl enable --now containerd/);
   assert.match(install, /if ! sudo modprobe xt_multiport 2>\/dev\/null; then/);
   assert.match(install, /apt-get install -y "linux-modules-extra-\$\(uname -r\)"/);
+  assert.match(install, /sudo nerdctl namespace create default/);
   assert.match(install, /sudo modprobe xt_multiport 2>\/dev\/null \|\| true/);
   assert.match(install, /-C \/opt\/cni\/bin/);
   assert.match(install, /sha256sum --check --strict/);
