@@ -1,0 +1,32 @@
+# ClawSweeper review — the ADVISORY half of this repo's PR validation.
+#
+# One line of policy: the engine, the image pin, the model endpoint and the comment
+# format all live in opencharly/.github's reusable workflow (R2). This file names the
+# event and the PR; nothing else.
+#
+# It is NOT a required check and can never block a merge — the required gate is
+# `validate / validate` (pr-validator.yml). Upstream's `clawsweeper-dispatch.yml` sends
+# PR events to OpenClaw's hosted service over OIDC; this fork has no trust relationship
+# there, so that workflow stays disabled and this one runs the review self-hosted on the
+# charly fleet instead.
+name: ClawSweeper review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  # The review image is an org-internal GHCR package; a called workflow can hold only what
+  # its caller grants.
+  packages: read
+
+jobs:
+  review:
+    uses: opencharly/.github/.github/workflows/clawsweeper-review.yml@main
+    with:
+      pr-number: ${{ github.event.pull_request.number }}
+    # The org secret AI_REVIEW_API_KEY reaches the reusable workflow through the caller;
+    # a called workflow cannot read org secrets on its own.
+    secrets: inherit
