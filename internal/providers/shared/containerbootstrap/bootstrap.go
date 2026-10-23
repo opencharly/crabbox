@@ -53,7 +53,10 @@ install_verified_apt_keyring() {
 const BrowserInstallScript = `
 if [ "${CRABBOX_BROWSER:-0}" = "1" ] && command -v apt-get >/dev/null 2>&1; then
   # A version check alone accepts a browser that cannot launch (missing
-  # libraries, no sandbox). Prove a headless render instead.
+  # libraries, no sandbox). Prove a headless render instead. The bootstrap runs
+  # as root, and Chromium refuses to start as root with its sandbox enabled;
+  # the relaxation is confined to this one-shot probe and never reaches the
+  # lease browser wrapper, which keeps its sandbox.
   browser_can_run_headless() {
     probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/crabbox-browser-probe.XXXXXX")"
     case "$(basename "$1")" in
@@ -61,7 +64,7 @@ if [ "${CRABBOX_BROWSER:-0}" = "1" ] && command -v apt-get >/dev/null 2>&1; then
         "$1" --headless --screenshot "$probe_dir/probe.png" about:blank >/dev/null 2>&1
         ;;
       *)
-        "$1" --headless --disable-gpu --dump-dom about:blank >/dev/null 2>&1
+        "$1" --headless --disable-gpu --disable-dev-shm-usage --no-sandbox --dump-dom about:blank >/dev/null 2>&1
         ;;
     esac
     probe_status=$?

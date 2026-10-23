@@ -42,7 +42,7 @@ func TestBrowserCheckProvesAHeadlessRender(t *testing.T) {
 	for _, want := range []string{
 		"browser_can_run_headless",
 		"browser_can_run_headless \"$candidate_path\"",
-		"--headless --disable-gpu --dump-dom about:blank",
+		"--headless --disable-gpu --disable-dev-shm-usage --no-sandbox --dump-dom about:blank",
 		"--headless --screenshot",
 	} {
 		if !strings.Contains(BrowserInstallScript, want) {
@@ -54,6 +54,20 @@ func TestBrowserCheckProvesAHeadlessRender(t *testing.T) {
 	}
 	if !strings.Contains(Script, BrowserInstallScript) {
 		t.Fatal("the bootstrap script must include the browser install script")
+	}
+}
+
+// The root bootstrap probe needs --no-sandbox, but the lease browser wrapper
+// must keep its sandbox: exactly one occurrence, and none after the wrapper
+// definition.
+func TestHeadlessSandboxRelaxationStaysInTheProbe(t *testing.T) {
+	if count := strings.Count(Script, "--no-sandbox"); count != 1 {
+		t.Fatalf("--no-sandbox occurs %d times; it must be confined to the bootstrap probe", count)
+	}
+	wrapper := strings.Index(Script, "browser_wrapper=/usr/local/bin/crabbox-browser")
+	probe := strings.Index(Script, "--no-sandbox")
+	if wrapper < 0 || probe < 0 || probe > wrapper {
+		t.Fatal("the sandbox relaxation is not confined before the lease browser wrapper")
 	}
 }
 

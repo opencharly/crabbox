@@ -187,9 +187,12 @@ daemon id, host, namespace, runtime, snapshotter and rootless mode are recorded;
 verify, delete, fork and restore fail closed with exit 7 if the daemon scope
 changes. Fork starts a fresh lease from the image and clones the captured state
 volume into the new lease's volume, re-applying fresh lease labels and the
-readiness hook. Restore (`crabbox checkpoint restore <id> --id <lease>`) keeps
-the lease id, claim, SSH key and published ports, re-clones the state volume,
-recreates the container, and reports convergence after the readiness hook.
+readiness hook; the host volumes present at capture time are recorded and
+replayed. Restore (`crabbox checkpoint restore <id> --id <lease>`) is bound to
+the lease the checkpoint was taken from (a different lease exits 7 before any
+daemon call), keeps the lease id, claim, SSH key and published ports, re-clones
+the state volume, recreates the container, and reports convergence after the
+readiness hook.
 
 `crabbox checkpoint fork <id>` starts a fresh local-container lease from the
 checkpoint image, then relocates the saved workspace into the new lease path.

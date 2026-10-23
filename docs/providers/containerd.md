@@ -170,12 +170,15 @@ provider. The native primitive is the `containerd-commit` kind, opt in with
 - **Delete** — removes the verified tag and the state-volume clone. A tag that
   now points at another image is refused.
 - **Fork** — a new lease from the committed image, with the captured state
-  volume cloned into the new lease's volume and fresh lease labels.
-- **Restore** — `crabbox checkpoint restore <id> --id <lease>` keeps the lease
-  id, claim, SSH key and published ports, re-clones the state volume, recreates
-  the container from the image, and reports convergence after the readiness
-  hook. A missing state-volume clone is refused before the live lease is
-  touched.
+  volume cloned into the new lease's volume and fresh lease labels. The host
+  volumes present when the checkpoint was created are recorded and replayed; a
+  checkpoint created without them does not add any.
+- **Restore** — `crabbox checkpoint restore <id> --id <lease>` is bound to the
+  lease the checkpoint was taken from (a different `--id` exits 7 before any
+  daemon call). It keeps the lease id, claim, SSH key and published ports,
+  re-clones the state volume, recreates the container from the image, and
+  reports convergence after the readiness hook. A missing state-volume clone is
+  refused before the live lease is touched.
 
 `containerd-criu` (process checkpoints via `--strategy process`) is a later
 seam and is not offered yet.

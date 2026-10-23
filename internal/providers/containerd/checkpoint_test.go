@@ -261,7 +261,7 @@ func TestCreateNativeCheckpointSequence(t *testing.T) {
 		return isGuestSSH(req) && strings.Contains(guestScript(req), "cat > /etc/machine-id")
 	})
 	body, _ := io.ReadAll(restoreCall.Stdin)
-	if string(body) != "original-machine-id" {
+	if string(body) != "original-machine-id\n" {
 		t.Fatalf("restored machine-id=%q", string(body))
 	}
 	if result.Metadata[checkpointMetadataPublishedPort] != "55283" ||
@@ -339,7 +339,7 @@ func TestCreateNativeCheckpointRestoresMachineIDWhenTheCommitFails(t *testing.T)
 		t.Fatal("a failed commit skipped the machine-id restore")
 	}
 	body, _ := io.ReadAll(restoreCall.Stdin)
-	if string(body) != "original-machine-id" {
+	if string(body) != "original-machine-id\n" {
 		t.Fatalf("restored machine-id=%q", string(body))
 	}
 }
@@ -703,5 +703,70 @@ func TestRestoreNativeCheckpointRefusesScopeDrift(t *testing.T) {
 	}
 	if hasRecordedCall(runner.calls, "image", "inspect") || hasRecordedCall(runner.calls, "rm", "-f") || hasRecordedCall(runner.calls, "run", "-d") {
 		t.Fatal("restore scope drift was detected after mutating the lease")
+	}
+}
+
+// A restore is bound to the checkpoint's own lease: a different --id must be
+// refused before any daemon call, or it would replace the recorded lease's
+// container with another lease's identity.
+func TestRestoreNativeCheckpointRefusesADifferentLease(t *testing.T) {
+	runner := checkpointBaseRunner(t, nil)
+	useCheckpointRuntime(t, runner)
+	_, err := (Provider{}).RestoreNativeCheckpoint(t.Context(), core.NativeCheckpointRestoreRequest{
+		Config: checkpointTestConfig(), Server: checkpointTestServer(), Target: checkpointTestTarget(),
+		LeaseID: "cbx_ffffffffffff", RepoName: "example",
+		Record: core.NativeCheckpointRestoreRecord{
+			Kind: core.CheckpointKindContainerdCommit, ImageID: checkpointTestNewImageID,
+			Name: "crabbox-checkpoint-checkpoint-cp-0123456789ab", Metadata: checkpointTestMetadata(checkpointTestConfig()),
+		},
+	})
+	var failure core.ExitError
+	if !core.AsExitError(err, &failure) || failure.Code != 7 || !strings.Contains(err.Error(), "taken from lease") {
+		t.Fatalf("err=%v, want exit 7 for a different lease", err)
+	}
+	runner.mu.Lock()
+	calls := len(runner.calls)
+	runner.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("a mismatched restore touched the daemon (%d calls)", calls)
+	}
+}
+
+// The fork path validates the recorded tag against the daemon before Acquire
+// launches, and clones the captured state volume into the new lease's volume.
+func TestValidateCheckpointForkScopeAndClone(t *testing.T) {
+	runner := checkpointBaseRunner(t, func(req core.LocalCommandRequest) (core.LocalCommandResult, error) {
+		switch {
+		case findArg(req.Args, "image", "inspect"):
+			return core.LocalCommandResult{Stdout: checkpointTestNewImageID}, nil
+		case findArg(req.Args, "run", "--rm") && findArg(req.Args, "-v", "crabbox-cp-cp-0123456789ab-state:/src:ro"):
+			return core.LocalCommandResult{}, nil
+		}
+		return core.LocalCommandResult{}, nil
+	})
+	useCheckpointRuntime(t, runner)
+	cfg := checkpointTestConfig()
+	cfg.Containerd.CheckpointMetadata = cloneCheckpointMetadata(checkpointTestMetadata(cfg))
+	cfg.Containerd.CheckpointMetadata[checkpointMetadataForkImageID] = checkpointTestNewImageID
+	cfg.Containerd.CheckpointMetadata[checkpointMetadataForkImageName] = "crabbox-checkpoint-checkpoint-cp-0123456789ab"
+	info := daemonInfo{ID: checkpointTestDaemonID}
+	if err := validateCheckpointForkScope(t.Context(), checkpointBackend(cfg).runner(), cfg, info); err != nil {
+		t.Fatalf("matching fork scope: %v", err)
+	}
+	replaced := cloneCheckpointMetadata(cfg.Containerd.CheckpointMetadata)
+	replaced[checkpointMetadataForkImageID] = checkpointTestImageID
+	replacedCfg := cfg
+	replacedCfg.Containerd.CheckpointMetadata = replaced
+	if err := validateCheckpointForkScope(t.Context(), checkpointBackend(replacedCfg).runner(), replacedCfg, info); err == nil {
+		t.Fatal("a replaced fork tag validated")
+	}
+	b := checkpointBackend(cfg)
+	if err := b.cloneCheckpointState(t.Context(), cfg, "crabbox-cbx_ffffffffffff-state"); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	if !hasRecordedCall(runner.calls, "run", "--rm", "--runtime", "/usr/bin/crun") ||
+		!hasRecordedCall(runner.calls, "-v", "crabbox-cp-cp-0123456789ab-state:/src:ro") ||
+		!hasRecordedCall(runner.calls, "-v", "crabbox-cbx_ffffffffffff-state:/dst") {
+		t.Fatalf("fork clone argv missing: %+v", runner.calls)
 	}
 }

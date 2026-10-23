@@ -113,15 +113,16 @@ func ValidImageID(value string) bool {
 	return true
 }
 
-// InspectReportsMissing reports whether an image-inspect failure means the
-// image is absent rather than that the operation failed.
+// InspectReportsMissing reports whether a Docker image-inspect failure means
+// the image is absent rather than that the operation failed. The vocabulary is
+// Docker's; a provider whose engine says something else appends its own token
+// rather than widening this one.
 func InspectReportsMissing(output string) bool {
 	value := strings.ToLower(output)
 	return strings.Contains(value, "no such image") ||
 		strings.Contains(value, "no such object") ||
 		strings.Contains(value, "image not found") ||
-		strings.Contains(value, "reference does not exist") ||
-		strings.Contains(value, "not found")
+		strings.Contains(value, "reference does not exist")
 }
 
 // TrimFailure bounds a command's failure text for an error message.

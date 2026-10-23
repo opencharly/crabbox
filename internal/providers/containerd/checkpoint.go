@@ -48,6 +48,7 @@ const (
 	checkpointMetadataDesktopEnv     = "desktop_env"
 	checkpointMetadataBrowser        = "browser"
 	checkpointMetadataNetwork        = "network"
+	checkpointMetadataVolumes        = "volumes"
 	checkpointMetadataInputsDir      = "inputs_dir"
 	checkpointMetadataPublishedPort  = "published_port"
 	checkpointMetadataExtraPorts     = "extra_ports"
@@ -57,8 +58,9 @@ const (
 )
 
 // machineIDMissing marks a lease whose image had no /etc/machine-id at capture
-// time, so the restore removes the file instead of recreating one.
-const machineIDMissing = "\x00missing\x00"
+// time, so the restore removes the file instead of recreating one. The token
+// cannot be a machine id (those are lowercase hex).
+const machineIDMissing = "CRABBOX-MACHINE-ID-MISSING"
 
 // checkpointCleanupTimeout bounds the finally steps (unpause, machine-id
 // restore, helper cleanup) so a broken guest cannot hang the capture.
@@ -295,6 +297,19 @@ func (Provider) ApplyNativeCheckpointForkConfig(req core.NativeCheckpointForkReq
 // the container is recreated from the committed image and the state volume is
 // re-cloned. The lease id, claim, SSH key and published ports are preserved.
 func (Provider) RestoreNativeCheckpoint(ctx context.Context, req core.NativeCheckpointRestoreRequest) (core.NativeCheckpointRestoreResult, error) {
+	// Bind the restore to the lease the checkpoint was taken from BEFORE any
+	// daemon call or mutation. Core resolves and claims the requested lease; it
+	// cannot know the checkpoint's owner, so the provider must refuse a restore
+	// into a different lease (whose container and state would otherwise be
+	// replaced by the recorded one).
+	metadata := req.Record.Metadata
+	recordedLease := strings.TrimSpace(metadata[checkpointMetadataLease])
+	if recordedLease == "" {
+		return core.NativeCheckpointRestoreResult{}, core.Exit(7, "refusing to restore: the checkpoint is missing its recorded lease id")
+	}
+	if !strings.EqualFold(recordedLease, strings.TrimSpace(req.LeaseID)) {
+		return core.NativeCheckpointRestoreResult{}, core.Exit(7, "refusing to restore a checkpoint taken from lease %s into lease %s; fork it to create a new lease instead", recordedLease, req.LeaseID)
+	}
 	// Prove the AMBIENT configuration still reaches the recorded daemon before
 	// replaying the recorded lease settings; replaying first would make the
 	// scope comparison compare the record with itself.
@@ -303,7 +318,6 @@ func (Provider) RestoreNativeCheckpoint(ctx context.Context, req core.NativeChec
 	if strings.TrimSpace(ambient.Containerd.Runtime) == "" || strings.TrimSpace(ambient.Containerd.Namespace) == "" || strings.TrimSpace(ambient.Containerd.Snapshotter) == "" {
 		return core.NativeCheckpointRestoreResult{}, core.Exit(7, "containerd checkpoint restore needs the namespace, runtime and snapshotter that identify the ambient daemon")
 	}
-	metadata := req.Record.Metadata
 	b := checkpointBackend(ambient)
 	info, err := b.verifyDaemon(ctx)
 	if err != nil {
@@ -453,6 +467,10 @@ func checkpointMetadataForCreate(ctx context.Context, cfg core.Config, req core.
 	if encoded, err := json.Marshal(extraPorts); err == nil {
 		encodedExtra = string(encoded)
 	}
+	encodedVolumes := "[]"
+	if encoded, err := json.Marshal(append([]string(nil), c.Volumes...)); err == nil {
+		encodedVolumes = string(encoded)
+	}
 	metadata := map[string]string{
 		checkpointMetadataRuntime:        c.Runtime,
 		checkpointMetadataRuntimePath:    runtimePathForConfig(c),
@@ -484,6 +502,7 @@ func checkpointMetadataForCreate(ctx context.Context, cfg core.Config, req core.
 		checkpointMetadataDesktopEnv:     core.NormalizedDesktopEnv(containercheckpoint.FirstValue(labels["desktop_env"], cfg.DesktopEnv)),
 		checkpointMetadataBrowser:        strconv.FormatBool(firstCheckpointLabelBool(labels["browser"], cfg.Browser)),
 		checkpointMetadataNetwork:        c.Network,
+		checkpointMetadataVolumes:        encodedVolumes,
 		checkpointMetadataInputsDir:      strings.TrimSpace(labels["inputs_dir"]),
 		checkpointMetadataPublishedPort:  hostPort,
 		checkpointMetadataExtraPorts:     encodedExtra,
@@ -617,6 +636,12 @@ func applyCheckpointLeaseConfig(cfg *core.Config, metadata map[string]string) {
 	if value := strings.TrimSpace(metadata[checkpointMetadataNetwork]); value != "" {
 		c.Network = value
 	}
+	if encoded := strings.TrimSpace(metadata[checkpointMetadataVolumes]); encoded != "" {
+		var volumes []string
+		if err := json.Unmarshal([]byte(encoded), &volumes); err == nil && len(volumes) > 0 {
+			c.Volumes = volumes
+		}
+	}
 }
 
 func cloneCheckpointMetadata(metadata map[string]string) map[string]string {
@@ -672,14 +697,14 @@ func checkpointRequireGNUCopyImage(ctx context.Context, runner commandRunner, cf
 	return nil
 }
 
-// checkpointEmptyMachineID returns the original machine-id and leaves the file
-// empty so the committed image boots with a fresh identity.
+// checkpointEmptyMachineID returns the original machine-id bytes and leaves the
+// file empty so the committed image boots with a fresh identity.
 func checkpointEmptyMachineID(ctx context.Context, rt core.Runtime, target core.SSHTarget) (string, error) {
 	script := `set -eu
 if [ -e /etc/machine-id ]; then
   cat /etc/machine-id
 else
-  printf '\000missing\000'
+  printf '` + machineIDMissing + `'
 fi
 : > /etc/machine-id
 `
@@ -687,7 +712,11 @@ fi
 	if err != nil || result.ExitCode != 0 {
 		return "", core.Exit(7, "empty /etc/machine-id over SSH: %v: %s", err, containercheckpoint.TrimFailure(result.Stderr))
 	}
-	return strings.TrimSpace(result.Stdout), nil
+	if strings.TrimSpace(result.Stdout) == machineIDMissing {
+		return machineIDMissing, nil
+	}
+	// Preserve the original bytes exactly, including a trailing newline.
+	return result.Stdout, nil
 }
 
 // checkpointRestoreMachineID restores the source's original machine-id. It is
@@ -838,7 +867,10 @@ func checkpointInspectImage(ctx context.Context, runner commandRunner, name stri
 	result, err := runner.nerdctlOutput(ctx, "image", "inspect", name, "--format", "{{.Id}}")
 	if err != nil {
 		detail := containercheckpoint.TrimFailure(result.Stderr)
-		if containercheckpoint.InspectReportsMissing(detail + " " + result.Stdout + " " + err.Error()) {
+		text := detail + " " + result.Stdout + " " + err.Error()
+		// nerdctl's own not-found wording is provider-specific and stays out of
+		// the shared Docker vocabulary.
+		if containercheckpoint.InspectReportsMissing(text) || strings.Contains(strings.ToLower(text), "not found") {
 			return "", true, nil
 		}
 		return "", false, core.Exit(7, "containerd image inspect %s: %v: %s", name, err, detail)

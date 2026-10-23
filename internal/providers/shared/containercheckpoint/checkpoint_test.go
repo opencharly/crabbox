@@ -70,4 +70,7 @@ func TestInspectReportsMissing(t *testing.T) {
 	if InspectReportsMissing("permission denied") {
 		t.Fatal("permission failure reported as a missing image")
 	}
+	if InspectReportsMissing("not found") {
+		t.Fatal("the shared Docker vocabulary must stay narrow: a bare not-found is provider-specific")
+	}
 }
