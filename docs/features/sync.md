@@ -520,20 +520,27 @@ If an otherwise forwardable origin requires authentication or is unreachable
 due to DNS, connectivity, or TLS transport errors, ordinary POSIX/WSL2 sync
 and local Actions hydration fall back to the full, plain manifest sync. This
 includes a peer disconnect during connection setup reported by Git/libcurl as
-`getpeername() ... is not connected`, and a reused Git worktree whose fetch
-fails during finalization.
-Fallback warnings contain only a fixed reason. The plain manifest path clears
-reusable fingerprints and Git hydration markers and does not forward local
-credentials.
+`getpeername() ... is not connected`, a reused Git worktree whose fetch fails
+during finalization, and a seed whose `git checkout` fails on that transport
+path: the seed has published nothing at that point, so the transport
+classification — not Git's own exit status — decides the disposition. The
+plain manifest path clears reusable fingerprints and Git hydration markers and
+does not forward local credentials.
 
 For branch-based seeds, local Actions hydration keeps unclassified seeding failures fatal, including
-missing refs, verification failures, and HTTP 5xx or other server failures,
-and aborts before file sync. Seed failure diagnostics report a fixed phase,
-advisory category, and command exit status. Raw Git/SSH output, URLs, paths,
-and credential-helper messages are never replayed in warnings. Capture is
+missing refs, verification failures, checkout content or invariant failures,
+and HTTP 5xx or other server failures, and aborts before file sync. Seed
+failure diagnostics report a fixed phase, advisory category, and command exit
+status on the warning line; the failing command's own Git/transport output
+follows on bounded `remote git seed detail (untrusted):` lines. That detail is
+stripped of terminal control characters, has URL credentials redacted as
+`***`, and is limited to 8 lines and 2 KiB, so a failure names its cause
+without letting remote text control the terminal or forge a classified field.
+Paths and endpoint names in the detail are ordinary diagnostics. Capture is
 limited to 16 KiB in memory; oversized or unrecognized output produces an
-`unknown` diagnosis instead of guessing. Existing Git metadata may still be
-present; a failed seed has not established that it is current or usable.
+`unknown` diagnosis with no detail lines and authorizes no fallback. Existing
+Git metadata may still be present; a failed seed has not established that it
+is current or usable.
 
 ### Opt-in local Git metadata
 

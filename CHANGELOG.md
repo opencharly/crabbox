@@ -8,6 +8,10 @@
 - containerd: native `containerd-commit` checkpoints — pause/commit of the lease root filesystem plus a state-volume clone, with a saved-and-restored `/etc/machine-id`, a GNU `cp` refusal (busybox drops `trusted.overlay.*`), verify/delete/fork, and an in-place restore that keeps the lease id, claim, SSH key and published ports. Adds the provider-neutral `NativeCheckpointRestoreProvider` beside `NativeCheckpointForkProvider`. The shared bootstrap gains the systemd ending, a real headless browser probe, and `docker-cli` beside `docker.io`. [Issue 3](https://github.com/opencharly/crabbox/issues/3).
 - containerd: `containerd-criu` process checkpoints via `crabbox checkpoint create --strategy process` — a live CRIU task dump (`nerdctl checkpoint create --leave-running`) for rootful runc daemons, with a pre-flight requiring `criu check --unprivileged --feature seccomp_suspend` to exit 0 **and** print `seccomp_suspend is supported`, a `no-subreaper` restore probe (create runs it too, so crun is refused at capture), SSH-session close before capture, `start --checkpoint` restore that preserves the writable layer, a zombie `STOPPED` refusal, lease-derived names with ownership proof before delete, `checkpoint rm` before container removal on release, and a fork refusal naming the mechanism. `--strategy process` is refused rather than reinterpreted on providers without the primitive. [Issue 4](https://github.com/opencharly/crabbox/issues/4).
 
+### Fixed
+
+- Sync: remote Git seed failures now print the failing command's own Git/transport output on bounded, labeled `remote git seed detail (untrusted):` lines, with terminal control characters stripped and URL credentials redacted, and the advisory category covers missing objects, promisor fetch failures, checkout errors, storage, ownership, and HTTP transport errors instead of collapsing them all to `unknown`. A seed whose `git checkout` fails on the transport path now takes the same plain manifest fallback as a failed clone instead of aborting the run; content and invariant failures stay fatal. [Issue 27](https://github.com/opencharly/crabbox/issues/27).
+
 ## 0.79.1 - 2026-10-20
 
 ### Highlights

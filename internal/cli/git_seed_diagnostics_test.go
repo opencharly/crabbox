@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -45,10 +46,14 @@ func TestGitSeedFailurePhaseAndPreservation(t *testing.T) {
 			if err == nil || !strings.Contains(string(out), "crabbox-git-seed phase="+phase) {
 				t.Fatalf("missing %s failure diagnostic: err=%v output=%q", phase, err, out)
 			}
+			if phase == "checkout" && (exitCode(err) != gitSeedCheckoutFailureExitCode || exitCode(err) == 128) {
+				t.Fatalf("checkout failure exit=%d want=%d and never git's raw fatal code: %v", exitCode(err), gitSeedCheckoutFailureExitCode, err)
+			}
 			var warning bytes.Buffer
 			warnRemoteGitSeedFailure(&warning, string(out), err)
-			if !strings.Contains(warning.String(), "phase="+phase) || strings.Contains(warning.String(), root) || strings.Contains(warning.String(), plan.RemoteURL) {
-				t.Fatalf("unsafe or incorrect warning: %q", warning.String())
+			first := strings.SplitN(warning.String(), "\n", 2)[0]
+			if !strings.HasPrefix(first, "warning: remote git seed failed: phase="+phase+" reason=") {
+				t.Fatalf("classified fields are not on the first line: %q", warning.String())
 			}
 			if data, err := os.ReadFile(marker); err != nil || string(data) != "existing workspace\n" {
 				t.Fatalf("failed seed changed sibling file: data=%q err=%v", data, err)
@@ -82,8 +87,22 @@ func TestGitSeedDiagnosticLabelsAndPrivacy(t *testing.T) {
 			var out bytes.Buffer
 			warnRemoteGitSeedFailure(&out, "crabbox-git-seed phase=clone\n"+tc.output, errors.New("private transport error"))
 			want := "warning: remote git seed failed: phase=clone reason=" + tc.want + " exit=unknown; continuing with file sync; Git metadata was not seeded or verified\n"
-			if out.String() != want {
-				t.Fatalf("warning=%q want=%q", out.String(), want)
+			if !strings.HasPrefix(out.String(), want) {
+				t.Fatalf("warning=%q want prefix=%q", out.String(), want)
+			}
+			for _, line := range strings.Split(strings.TrimSuffix(strings.TrimPrefix(out.String(), want), "\n"), "\n") {
+				if line == "" {
+					continue
+				}
+				if !strings.HasPrefix(line, "warning: remote git seed detail (untrusted): ") {
+					t.Fatalf("unlabeled detail line: %q", line)
+				}
+				if strings.ContainsAny(line, "\x1b\r") {
+					t.Fatalf("detail line carries terminal control characters: %q", line)
+				}
+			}
+			if strings.Contains(out.String(), "do-not-forward") || strings.Contains(out.String(), "fixture-user") {
+				t.Fatalf("warning leaked URL credentials: %q", out.String())
 			}
 		})
 	}
@@ -96,6 +115,114 @@ func TestGitSeedDiagnosticLabelsAndPrivacy(t *testing.T) {
 		if !strings.Contains(out.String(), tc.want) || !strings.Contains(out.String(), "exit=cancelled") {
 			t.Fatalf("warning=%q", out.String())
 		}
+	}
+}
+
+// A seed failure must name git's own cause. The regression this covers reported
+// phase=checkout reason=unknown exit=128 while git's explanation was discarded.
+func TestGitSeedDiagnosticSurfacesSanitizedDetail(t *testing.T) {
+	var out bytes.Buffer
+	capture := "crabbox-git-seed phase=checkout\n" +
+		"fatal: unable to checkout working tree\n" +
+		"error: invalid path 'drivers/gpu'\n" +
+		"\x1b[31mwarning: https://user:tok3n@example.invalid/repo.git was rejected\x1b[0m\r\n"
+	warnRemoteGitSeedFailure(&out, capture, errors.New("exit status 128"))
+	text := out.String()
+	if !strings.Contains(text, "phase=checkout reason=checkout exit=unknown") {
+		t.Fatalf("warning did not classify the checkout failure: %q", text)
+	}
+	for _, want := range []string{
+		"warning: remote git seed detail (untrusted): fatal: unable to checkout working tree\n",
+		"warning: remote git seed detail (untrusted): error: invalid path 'drivers/gpu'\n",
+		"https://***@example.invalid/repo.git",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in %q", want, text)
+		}
+	}
+	if strings.Contains(text, "tok3n") || strings.ContainsAny(text, "\x1b\r") {
+		t.Fatalf("detail was not sanitized: %q", text)
+	}
+}
+
+func TestGitSeedDiagnosticDetailIsBounded(t *testing.T) {
+	var out bytes.Buffer
+	lines := []string{"crabbox-git-seed phase=clone"}
+	for i := 0; i < 200; i++ {
+		lines = append(lines, "remote line "+strconv.Itoa(i)+" "+strings.Repeat("x", 2000))
+	}
+	warnRemoteGitSeedFailure(&out, strings.Join(lines, "\n"), errors.New("exit status 128"))
+	detail := 0
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(line, "warning: remote git seed detail (untrusted): ") {
+			detail++
+			if len(line) > gitSeedDetailLineLimit+64 {
+				t.Fatalf("detail line not bounded: %d bytes", len(line))
+			}
+		}
+	}
+	if detail < 1 || detail > gitSeedDetailLineCount+1 || len(out.String()) > gitSeedDetailByteLimit+4096 {
+		t.Fatalf("detail block not bounded: lines=%d bytes=%d", detail, len(out.String()))
+	}
+	if !strings.Contains(out.String(), "... (further detail omitted)") {
+		t.Fatalf("omitted detail was not reported: %q", out.String())
+	}
+}
+
+func TestGitSeedDiagnosticReasonsCoverGitDieClasses(t *testing.T) {
+	for _, tc := range []struct{ name, output, want string }{
+		{"missing object", "fatal: reference is not a tree: 0123456789", "repository/objects"},
+		{"promisor fetch", "fatal: could not fetch 0123456789 from promisor remote", "repository/objects"},
+		{"working tree", "fatal: unable to checkout working tree", "checkout"},
+		{"disk full", "fatal: write error: No space left on device", "storage"},
+		{"ownership", "fatal: detected dubious ownership in repository at '/work/repo'", "ownership"},
+		{"http status", "error: RPC failed; HTTP 429 curl 22 The requested URL returned error: 429", "connectivity"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			warnRemoteGitSeedFailure(&out, "crabbox-git-seed phase=checkout\n"+tc.output, errors.New("exit status 128"))
+			if !strings.HasPrefix(out.String(), "warning: remote git seed failed: phase=checkout reason="+tc.want+" exit=unknown;") {
+				t.Fatalf("warning=%q want reason=%s", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// A checkout that fails on the transport path has published nothing, so the
+// transport classifier decides the disposition instead of git's own 128
+// aborting a sync that plain manifest mode can complete.
+func TestGitSeedCheckoutFailureDisposition(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture for process exit status")
+	}
+	for _, tc := range []struct {
+		name, output string
+		wantReason   string
+		wantFallback bool
+	}{
+		{
+			name:         "promisor transport failure",
+			output:       "crabbox-git-seed phase=checkout\nfatal: unable to access 'https://example.test/repo': Failed to connect to example.test port 443 after 133131 ms: Could not connect to server\nfatal: could not fetch 244d034463908327706bedfb13daa49843052b95 from promisor remote",
+			wantReason:   "origin_unavailable",
+			wantFallback: true,
+		},
+		{
+			name:         "content failure stays fatal",
+			output:       "crabbox-git-seed phase=checkout\nfatal: unable to checkout working tree\nerror: invalid path 'drivers/gpu'",
+			wantFallback: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := exec.Command("sh", "-c", "exit "+strconv.Itoa(gitSeedCheckoutFailureExitCode)).Run()
+			if exitCode(err) != gitSeedCheckoutFailureExitCode {
+				t.Fatalf("fixture exit=%d err=%v", exitCode(err), err)
+			}
+			plan := gitCoherencePlan{RemoteURL: "https://example.test/repo.git", Target: strings.Repeat("a", 40), Tree: strings.Repeat("b", 40)}
+			reason, fallback := gitSeedRuntimeFallbackResult(plan, tc.output, err)
+			if fallback != tc.wantFallback || reason != tc.wantReason {
+				t.Fatalf("fallback=%t reason=%q want fallback=%t reason=%q", fallback, reason, tc.wantFallback, tc.wantReason)
+			}
+		})
 	}
 }
 
@@ -220,8 +347,17 @@ cat >/dev/null
 		t.Fatalf("sync error=%v\n%s", err, stderr.String())
 	}
 	warning := "warning: remote git seed failed: phase=clone reason=repository/ref exit=128; aborting before file sync; Git metadata was not seeded or verified"
-	if strings.Count(stderr.String(), warning) != 1 || strings.Contains(stderr.String(), "secret-private-endpoint") {
+	if strings.Count(stderr.String(), warning) != 1 {
 		t.Fatalf("unsafe or missing diagnostic: %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "warning: remote git seed detail (untrusted): fatal: repository secret-private-endpoint not found") {
+		t.Fatalf("git's own explanation was discarded: %q", stderr.String())
+	}
+	for _, line := range strings.Split(stderr.String(), "\n") {
+		if strings.Contains(line, "secret-private-endpoint") &&
+			!strings.HasPrefix(line, "warning: remote git seed detail (untrusted): ") {
+			t.Fatalf("remote text escaped the labeled detail block: %q", line)
+		}
 	}
 	data, err := os.ReadFile(calls)
 	if err != nil || string(data) != "seed\n" {
