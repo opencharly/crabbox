@@ -17,12 +17,12 @@ func forwardPublishingSupported() error {
 
 func detachForwardOwner(_ *exec.Cmd) {}
 
-func lockForwardOwner(_ string) (func(), error) {
-	return nil, forwardPublishingSupported()
+func tryForwardLock(_ string, _ bool) (func(), bool, error) {
+	return nil, false, forwardPublishingSupported()
 }
 
-func forwardOwnerLockHeld(_ string) (bool, error) {
-	return false, forwardPublishingSupported()
+func lockForwardOwner(_ string) (func(), error) {
+	return nil, forwardPublishingSupported()
 }
 
 func signalForwardOwnerProcess(_ int) error {

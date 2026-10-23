@@ -207,7 +207,21 @@ publish_row() {
     log "fail: --unpublish left 127.0.0.1:${local_port} listening"
     return 1
   fi
+  # Publish again and STOP WITHOUT unpublishing: release must reap the owner.
+  if ! output="$("$crabbox" ports --provider containerd --id "$lease" --publish 2222 2>&1)"; then
+    printf '%s\n' "$output" >&2
+    return 1
+  fi
+  local_port="$(printf '%s\n' "$output" | sed -n 's/.*127\.0\.0\.1:\([0-9][0-9]*\) -> container:2222.*/\1/p' | head -1)"
+  if [[ -z "$local_port" ]]; then
+    log "fail: the release-reap publish printed no operator-side port"
+    return 1
+  fi
   "$crabbox" stop --provider containerd "$lease" >/dev/null
+  if timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"${local_port}" 2>/dev/null; then
+    log "fail: release left the published forward on 127.0.0.1:${local_port} listening"
+    return 1
+  fi
   return 0
 }
 

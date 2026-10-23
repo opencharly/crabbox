@@ -33,6 +33,9 @@ type backend struct {
 
 	dialPort dialFunc
 	waitSSH  waitForSSHFunc
+	// loopbackPort allocates an operator-side loopback port. Injectable so the
+	// tunnel/published-port collision can be forced in a test.
+	loopbackPort func() (string, error)
 
 	// publish seams are injectable so the forward-owner lifecycle is testable
 	// without forking a real helper.
@@ -67,6 +70,13 @@ func newBackend(spec core.ProviderSpec, cfg core.Config, rt core.Runtime) core.B
 func (b *backend) Spec() core.ProviderSpec { return b.spec }
 
 func (b *backend) runner() commandRunner { return commandRunner{cfg: b.cfg, rt: b.rt} }
+
+func (b *backend) newLoopbackPort() (string, error) {
+	if b.loopbackPort != nil {
+		return b.loopbackPort()
+	}
+	return allocateLoopbackPort()
+}
 
 // waitForLeaseSSH is the one SSH-readiness probe both Acquire and Resolve use.
 // The injectable seam keeps the remote path testable without a live host.
@@ -987,7 +997,7 @@ func (b *backend) startForward(ctx context.Context, leaseID, remotePort string, 
 	// A resolve may replace an existing tunnel in this process; never leak the
 	// previous child.
 	b.stopForward(leaseID)
-	localPort, err := allocateLoopbackPort()
+	localPort, err := b.newLoopbackPort()
 	if err != nil {
 		return err
 	}
@@ -1006,9 +1016,25 @@ func (b *backend) startForward(ctx context.Context, leaseID, remotePort string, 
 // lease tunnel, so the container port lives on the far side in both modes and
 // nothing probes the remote host's loopback from here.
 func (b *backend) startPublishedForward(ctx context.Context, leaseID string, target core.SSHTarget, localPort string, containerPort int) error {
+	key := publishedForwardKey(leaseID, containerPort)
 	args := b.runner().leaseForwardArgv(target, localPort, strconv.Itoa(containerPort))
-	return b.startSSHForward(ctx, publishedForwardKey(leaseID, containerPort), args, localPort,
-		fmt.Sprintf("containerd forward for container port %d", containerPort))
+	if err := b.startSSHForward(ctx, key, args, localPort,
+		fmt.Sprintf("containerd forward for container port %d", containerPort)); err != nil {
+		return err
+	}
+	// A listener can be proven by the lease tunnel if the two ports collide; the
+	// child's own liveness is what proves this forward is the listener.
+	done, ok := b.forwardDone(key)
+	if !ok {
+		return core.Exit(5, "containerd forward for container port %d was not registered", containerPort)
+	}
+	select {
+	case <-done:
+		b.stopForwardKey(key)
+		return core.Exit(5, "containerd forward for container port %d exited before its listener was proven on 127.0.0.1:%s", containerPort, localPort)
+	default:
+	}
+	return nil
 }
 
 // startSSHForward is the one owner of an ssh -L child. Every forward (the lease
@@ -1066,6 +1092,17 @@ func (b *backend) stopForwardKeyAndWait(ctx context.Context, key forwardKey) err
 	case <-ctx.Done():
 		return context.Cause(ctx)
 	}
+}
+
+// forwardDone exposes one forward's completion so its owner can supervise it.
+func (b *backend) forwardDone(key forwardKey) (<-chan struct{}, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	forward := b.forwards[key]
+	if forward == nil {
+		return nil, false
+	}
+	return forward.done, true
 }
 
 func (b *backend) allocatePort(ctx context.Context) (string, error) {

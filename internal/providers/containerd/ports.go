@@ -55,7 +55,7 @@ type portMapping struct {
 	LeaseID       string `json:"lease_id,omitempty"`
 }
 
-type spawnForwardOwnerFunc func(spec, localPort, logPath string) (int, <-chan error, error)
+type spawnForwardOwnerFunc func(spec, logPath string) (int, <-chan error, error)
 type stopForwardOwnerFunc func(pid int) error
 
 var errForwardOwnerPending = errors.New("forward owner has not published its record yet")
@@ -137,15 +137,11 @@ func (b *backend) publishPorts(ctx context.Context, req core.PortsRequest) (stri
 			mappings = append(mappings, forwardMapping(existing))
 			continue
 		}
-		localPort := requestedLocal
-		if localPort == 0 {
-			allocated, err := allocateLoopbackPort()
-			if err != nil {
-				return "", err
-			}
-			localPort, _ = strconv.Atoi(allocated)
-		}
-		forward, err := b.startForwardOwner(ctx, lease, containerPort, localPort, spec)
+		// The owner allocates the operator-side port AFTER it establishes the
+		// lease tunnel: allocating here lets the allocator hand the same port to
+		// both, and the tunnel's listener then satisfies the publish readiness
+		// probe.
+		forward, err := b.startForwardOwner(ctx, lease, containerPort, spec)
 		if err != nil {
 			return "", err
 		}
@@ -201,18 +197,30 @@ func (b *backend) runForwardOwner(ctx context.Context, req core.PortsRequest) (s
 	if err != nil {
 		return "", err
 	}
-	localPort, err := strconv.Atoi(strings.TrimSpace(req.ForwardOwnerPort))
-	if err != nil || localPort < 1 || localPort > 65535 {
-		return "", core.Exit(2, "the forward owner got an invalid local port %q", req.ForwardOwnerPort)
-	}
-	if requestedLocal != 0 && requestedLocal != localPort {
-		return "", core.Exit(2, "the forward owner local port %d does not match its spec %q", localPort, req.ForwardOwnerSpec)
-	}
 	// Prepare starts the lease tunnel in remote mode, so the forward below
 	// addresses the operator-side end and never the remote host's loopback.
+	// It runs FIRST: the tunnel binds an operator-side port, and only then can a
+	// free published port be chosen without the two allocations colliding.
 	lease, err := b.Resolve(ctx, core.ResolveRequest{ID: req.ID, Prepare: true})
 	if err != nil {
 		return "", err
+	}
+	// Every return below must take the lease tunnel down with it, or its ssh
+	// child outlives the owner.
+	defer b.stopForwardKeyAndWaitQuietly(lease.LeaseID, containerPort, true)
+	localPort := requestedLocal
+	if localPort == 0 {
+		allocated, err := b.newLoopbackPort()
+		if err != nil {
+			return "", err
+		}
+		localPort, _ = strconv.Atoi(allocated)
+	}
+	// Even with the tunnel already bound, an explicitly requested port can name
+	// it; its listener would satisfy the readiness probe and the forward would
+	// silently serve the lease's SSH port instead of the container port.
+	if strconv.Itoa(localPort) == strings.TrimSpace(lease.SSH.Port) {
+		return "", core.Exit(2, "local port %d is the lease's own SSH port on this operator; choose another port or omit it", localPort)
 	}
 	recordPath, err := forwardRecordPath(lease.LeaseID, containerPort)
 	if err != nil {
@@ -245,28 +253,61 @@ func (b *backend) runForwardOwner(ctx context.Context, req core.PortsRequest) (s
 		CreatedAt:     b.now(),
 	}
 	if err := b.probePublishedForward(ctx, lease, containerPort, localPort); err != nil {
-		b.stopPublishedForwardAndWait(lease.LeaseID, containerPort)
 		return "", err
 	}
 	if err := writeForwardRecord(recordPath, record); err != nil {
-		b.stopPublishedForwardAndWait(lease.LeaseID, containerPort)
 		return "", err
 	}
 	fmt.Fprintf(b.rt.Stderr, "forward owner pid=%d lease=%s container_port=%d local_port=%d host_scope=%s\n",
 		record.OwnerPID, record.LeaseID, containerPort, localPort, record.HostScope)
-	<-ctx.Done()
-	teardownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), forwardOwnerStopTimeout)
-	defer cancel()
-	b.stopPublishedForwardAndWait(lease.LeaseID, containerPort)
-	_ = b.stopForwardKeyAndWait(teardownCtx, leaseForwardKey(lease.LeaseID))
-	_ = os.Remove(recordPath)
-	return renderPortMappings(req.JSON, []portMapping{forwardMapping(record)})
+	done, ok := b.forwardDone(publishedForwardKey(lease.LeaseID, containerPort))
+	if !ok {
+		_ = os.Remove(recordPath)
+		return "", core.Exit(5, "the publish forward for container port %d was not registered", containerPort)
+	}
+	select {
+	case <-ctx.Done():
+		return b.finishForwardOwner(ctx, req.JSON, lease, containerPort, record, recordPath)
+	case <-done:
+		if ctx.Err() != nil {
+			// Shutdown won the race; take the normal teardown.
+			return b.finishForwardOwner(ctx, req.JSON, lease, containerPort, record, recordPath)
+		}
+		// The ssh child died while the owner was live: do not leave a record
+		// that reports a forward nobody is serving.
+		b.stopForwardKeyAndWaitQuietly(lease.LeaseID, containerPort, true)
+		_ = os.Remove(recordPath)
+		return "", core.Exit(5, "the publish forward for container port %d exited unexpectedly; the lease SSH session ended and no listener is published", containerPort)
+	}
 }
 
-func (b *backend) stopPublishedForwardAndWait(leaseID string, containerPort int) {
+// finishForwardOwner tears the owner's forwards down and removes its record
+// only when the teardown is proven. A failed teardown retains the record so a
+// caller sees the failure instead of a silent success with a live listener.
+func (b *backend) finishForwardOwner(ctx context.Context, jsonOut bool, lease core.LeaseTarget, containerPort int, record publishedForward, recordPath string) (string, error) {
+	teardownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), forwardOwnerStopTimeout)
+	defer cancel()
+	var errs []error
+	if err := b.stopForwardKeyAndWait(teardownCtx, publishedForwardKey(lease.LeaseID, containerPort)); err != nil {
+		errs = append(errs, fmt.Errorf("published forward: %w", err))
+	}
+	if err := b.stopForwardKeyAndWait(teardownCtx, leaseForwardKey(lease.LeaseID)); err != nil {
+		errs = append(errs, fmt.Errorf("lease tunnel: %w", err))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return "", core.Exit(5, "the forward owner could not stop the forward for container port %d: %v; the record is retained", containerPort, err)
+	}
+	_ = os.Remove(recordPath)
+	return renderPortMappings(jsonOut, []portMapping{forwardMapping(record)})
+}
+
+func (b *backend) stopForwardKeyAndWaitQuietly(leaseID string, containerPort int, withTunnel bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), forwardOwnerStopTimeout)
 	defer cancel()
 	_ = b.stopForwardKeyAndWait(ctx, publishedForwardKey(leaseID, containerPort))
+	if withTunnel {
+		_ = b.stopForwardKeyAndWait(ctx, leaseForwardKey(leaseID))
+	}
 }
 
 // probePublishedForward proves the forward end to end before it is recorded: a
@@ -297,8 +338,9 @@ func isReadTimeout(err error) bool {
 }
 
 // startForwardOwner spawns the detached owner and waits for the record it
-// publishes only after its forward is proven.
-func (b *backend) startForwardOwner(ctx context.Context, lease core.LeaseTarget, containerPort, localPort int, spec string) (publishedForward, error) {
+// publishes only after its forward is proven. The owner chooses the
+// operator-side port after it establishes the lease tunnel.
+func (b *backend) startForwardOwner(ctx context.Context, lease core.LeaseTarget, containerPort int, spec string) (publishedForward, error) {
 	recordPath, err := forwardRecordPath(lease.LeaseID, containerPort)
 	if err != nil {
 		return publishedForward{}, err
@@ -314,7 +356,7 @@ func (b *backend) startForwardOwner(ctx context.Context, lease core.LeaseTarget,
 	if spawn == nil {
 		spawn = b.spawnForwardOwnerProcess
 	}
-	pid, exited, err := spawn(spec, strconv.Itoa(localPort), logPath)
+	pid, exited, err := spawn(spec, logPath)
 	if err != nil {
 		return publishedForward{}, err
 	}
@@ -356,7 +398,7 @@ func (b *backend) startForwardOwner(ctx context.Context, lease core.LeaseTarget,
 	return result.Value, nil
 }
 
-func (b *backend) spawnForwardOwnerProcess(spec, localPort, logPath string) (int, <-chan error, error) {
+func (b *backend) spawnForwardOwnerProcess(spec, logPath string) (int, <-chan error, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return 0, nil, core.Exit(2, "resolve the crabbox executable for the forward owner: %v", err)
@@ -368,7 +410,6 @@ func (b *backend) spawnForwardOwnerProcess(spec, localPort, logPath string) (int
 	cmd := exec.Command(exe, os.Args[1:]...)
 	cmd.Env = withEnv(os.Environ(), map[string]string{
 		core.PortsForwardOwnerSpecEnv: spec,
-		core.PortsForwardOwnerPortEnv: localPort,
 	})
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	detachForwardOwner(cmd)
@@ -404,29 +445,70 @@ func (b *backend) forwardOwnerFailure(leaseID string, containerPort int, logPath
 	return core.Exit(5, "publish container port %d on lease %s failed: %v", containerPort, leaseID, cause)
 }
 
-func (b *backend) waitForwardStopped(ctx context.Context, lockPath string) error {
-	waitCtx, cancel := context.WithTimeout(ctx, forwardOwnerStopTimeout)
-	defer cancel()
-	_, err := shared.Poll(waitCtx, 0, forwardOwnerPollInterval, shared.SleepContext,
-		func(context.Context) (bool, error) {
-			held, err := forwardOwnerLockHeld(lockPath)
-			return !held, err
-		},
-		func(_ context.Context, stopped bool, err error) (bool, error) { return stopped, err },
-		nil,
-	)
-	return err
+// forwardReownedError reports that a different owner took the same container
+// port while the previous one was being stopped. Its record must be left alone.
+type forwardReownedError struct{ pid int }
+
+func (e *forwardReownedError) Error() string {
+	return fmt.Sprintf("the forward was re-owned by pid %d", e.pid)
 }
 
-// stopPublishedForwardOwner stops the owner the record names (only when its
-// lock proves it is still alive) and removes the forward's state. Both
-// --unpublish and release go through here.
+type forwardLockAttempt struct{ release func() }
+
+// waitForwardLock waits until it can take the owner lock, which proves the
+// recorded owner is gone. If the record changes to another owner first, it
+// reports forwardReownedError instead of waiting for that owner to exit.
+func (b *backend) waitForwardLock(ctx context.Context, lockPath string, ownerPID int) (func(), error) {
+	recordPath := strings.TrimSuffix(lockPath, ".lock") + ".json"
+	waitCtx, cancel := context.WithTimeout(ctx, forwardOwnerStopTimeout)
+	defer cancel()
+	result, err := shared.Poll(waitCtx, 0, forwardOwnerPollInterval, shared.SleepContext,
+		func(context.Context) (forwardLockAttempt, error) {
+			release, held, err := tryForwardLock(lockPath, true)
+			if err != nil {
+				return forwardLockAttempt{}, err
+			}
+			if !held {
+				return forwardLockAttempt{release: release}, nil
+			}
+			current, ok, err := readForwardRecord(recordPath)
+			if err != nil {
+				return forwardLockAttempt{}, err
+			}
+			if ok && current.OwnerPID != ownerPID {
+				return forwardLockAttempt{}, &forwardReownedError{pid: current.OwnerPID}
+			}
+			return forwardLockAttempt{}, nil
+		},
+		func(_ context.Context, attempt forwardLockAttempt, err error) (bool, error) {
+			if err != nil {
+				return false, err
+			}
+			return attempt.release != nil, nil
+		},
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if result.Value.release == nil {
+		return nil, core.Exit(5, "the owner lock %s was never released", lockPath)
+	}
+	return result.Value.release, nil
+}
+
+// stopPublishedForwardOwner stops the owner the record names and removes its
+// state while holding the owner lock, so a concurrent publisher cannot be
+// orphaned by the removal. Both --unpublish and release go through here.
 func (b *backend) stopPublishedForwardOwner(ctx context.Context, leaseID string, record publishedForward) error {
-	lockPath, err := forwardLockPath(leaseID, record.ContainerPort)
+	recordPath, err := forwardRecordPath(leaseID, record.ContainerPort)
 	if err != nil {
 		return err
 	}
-	held, err := forwardOwnerLockHeld(lockPath)
+	lockPath := forwardLockPathFor(recordPath)
+	// create: the lock file is the stable rendezvous; acquiring it here also
+	// covers the case where no owner ever created it.
+	release, held, err := tryForwardLock(lockPath, true)
 	if err != nil {
 		return err
 	}
@@ -434,9 +516,24 @@ func (b *backend) stopPublishedForwardOwner(ctx context.Context, leaseID string,
 		if err := b.signalForwardOwner(record.OwnerPID); err != nil {
 			return core.Exit(5, "stop the forward owner pid %d for container port %d: %v", record.OwnerPID, record.ContainerPort, err)
 		}
-		if err := b.waitForwardStopped(ctx, lockPath); err != nil {
+		release, err = b.waitForwardLock(ctx, lockPath, record.OwnerPID)
+		if err != nil {
+			var reowned *forwardReownedError
+			if errors.As(err, &reowned) {
+				return core.Exit(2, "the forward for container port %d was re-owned by pid %d before it could be stopped; its record is retained", record.ContainerPort, reowned.pid)
+			}
 			return core.Exit(5, "forward owner pid %d for container port %d did not stop: %v", record.OwnerPID, record.ContainerPort, err)
 		}
+	}
+	defer release()
+	// Holding the lock proves no owner is alive, so the record cannot be
+	// replaced while it is inspected and removed.
+	current, ok, err := readForwardRecord(recordPath)
+	if err != nil {
+		return err
+	}
+	if ok && current.OwnerPID != record.OwnerPID {
+		return core.Exit(2, "the forward for container port %d was re-owned by pid %d before it could be stopped; its record is retained", record.ContainerPort, current.OwnerPID)
 	}
 	return removeForwardState(leaseID, record.ContainerPort)
 }
@@ -457,15 +554,19 @@ func liveForwardRecord(recordPath string) (publishedForward, bool, error) {
 	if err != nil || !ok {
 		return publishedForward{}, false, err
 	}
-	held, err := forwardOwnerLockHeld(forwardLockPathFor(recordPath))
+	release, held, err := tryForwardLock(forwardLockPathFor(recordPath), true)
 	if err != nil {
 		return publishedForward{}, false, err
 	}
-	if !held {
-		_ = os.Remove(recordPath)
-		return publishedForward{}, false, nil
+	if held {
+		return record, true, nil
 	}
-	return record, true, nil
+	// Holding the lock proves no owner is alive, and no publisher can write a
+	// replacement while it is held.
+	defer release()
+	_ = os.Remove(recordPath)
+	_ = os.Remove(logPathForRecord(recordPath))
+	return publishedForward{}, false, nil
 }
 
 func (b *backend) livePublishedForwards(leaseID string) ([]publishedForward, error) {
@@ -541,21 +642,20 @@ func (b *backend) reapPublishedForwards(ctx context.Context, leaseID string) err
 // removeForwardState deletes a stopped forward's record, lock and log, and the
 // lease directory when it holds no other forward. It is only called once the
 // owner is gone, never while the lock still proves one is alive.
+// removeForwardState deletes a stopped forward's record and log. The lock file
+// is deliberately kept: it is the stable rendezvous publishers and stopppers
+// use, and unlinking it would let a concurrent publisher lock a new inode while
+// another process still holds the old one (two owners for one container port).
 func removeForwardState(leaseID string, containerPort int) error {
 	recordPath, err := forwardRecordPath(leaseID, containerPort)
 	if err != nil {
 		return err
 	}
-	for _, path := range []string{
-		recordPath,
-		forwardLockPathFor(recordPath),
-		strings.TrimSuffix(recordPath, ".json") + ".log",
-	} {
+	for _, path := range []string{recordPath, logPathForRecord(recordPath)} {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return core.Exit(5, "remove forward state %s: %v", path, err)
 		}
 	}
-	_ = os.Remove(filepath.Dir(recordPath)) // succeeds only when every sibling is gone
 	return nil
 }
 
@@ -655,12 +755,16 @@ func forwardLockPathFor(recordPath string) string {
 	return strings.TrimSuffix(recordPath, ".json") + ".lock"
 }
 
+func logPathForRecord(recordPath string) string {
+	return strings.TrimSuffix(recordPath, ".json") + ".log"
+}
+
 func forwardLogPath(leaseID string, containerPort int) (string, error) {
 	recordPath, err := forwardRecordPath(leaseID, containerPort)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSuffix(recordPath, ".json") + ".log", nil
+	return logPathForRecord(recordPath), nil
 }
 
 func readForwardRecord(path string) (publishedForward, bool, error) {
