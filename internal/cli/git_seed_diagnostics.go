@@ -87,7 +87,8 @@ func reportRemoteGitSeedFailure(w io.Writer, output string, err error, dispositi
 // remoteGitSeedDetail returns the phase declared by the LAST fixed marker in
 // the capture and the lines that follow it: the output of the command that
 // actually failed. The phase field only comes from a line that is exactly one
-// of the fixed markers, so remote text cannot invent it.
+// of the fixed markers, so the detail block cannot inject one; a remote process
+// that prints a whole marker line itself is unchanged by this patch.
 func remoteGitSeedDetail(output string) (string, []string) {
 	phase := "unknown"
 	lines := strings.Split(output, "\n")
@@ -163,11 +164,22 @@ func stripRemoteControl(line string) string {
 			b.WriteByte(' ')
 		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f:
 			// Drop terminal control characters, including ESC and the C1 range.
+		case isRemoteLineFormatControl(r):
+			// Drop bidi overrides and line/paragraph separators: they do not
+			// move a cursor but can reorder or split a log line.
 		default:
 			b.WriteRune(r)
 		}
 	}
 	return b.String()
+}
+
+func isRemoteLineFormatControl(r rune) bool {
+	switch r {
+	case '‎', '‏', ' ', ' ', '‪', '‫', '‬', '‭', '‮', '⁦', '⁧', '⁨', '⁩':
+		return true
+	}
+	return false
 }
 
 // redactRemoteURLUserinfo replaces any URL userinfo (a password, or a bare

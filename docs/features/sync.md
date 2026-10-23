@@ -533,9 +533,11 @@ and HTTP 5xx or other server failures, and aborts before file sync. Seed
 failure diagnostics report a fixed phase, advisory category, and command exit
 status on the warning line; the failing command's own Git/transport output
 follows on bounded `remote git seed detail (untrusted):` lines. That detail is
-stripped of terminal control characters, has URL credentials redacted as
-`***`, and is limited to 8 lines and 2 KiB, so a failure names its cause
-without letting remote text control the terminal or forge a classified field.
+stripped of terminal control, bidi-override and line-separator characters, has
+URL credentials redacted as `***`, and is limited to 8 lines and 2 KiB, so a
+failure names its cause without letting remote text move the terminal, split a
+log line, or inject a field through the detail block (the phase still comes
+only from a whole-line fixed marker, as before).
 Paths and endpoint names in the detail are ordinary diagnostics. Capture is
 limited to 16 KiB in memory; oversized output produces an `unknown` diagnosis
 with no detail lines, and its discarded text can never authorize a

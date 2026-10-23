@@ -125,7 +125,8 @@ func TestGitSeedDiagnosticSurfacesSanitizedDetail(t *testing.T) {
 	capture := "crabbox-git-seed phase=checkout\n" +
 		"fatal: unable to checkout working tree\n" +
 		"error: invalid path 'drivers/gpu'\n" +
-		"\x1b[31mwarning: https://user:tok3n@example.invalid/repo.git was rejected\x1b[0m\r\n"
+		"\x1b[31mwarning: https://user:tok3n@example.invalid/repo.git was rejected\x1b[0m\r\n" +
+		"‮evil‬ and  split\n"
 	warnRemoteGitSeedFailure(&out, capture, errors.New("exit status 128"))
 	text := out.String()
 	if !strings.Contains(text, "phase=checkout reason=checkout exit=unknown") {
@@ -135,12 +136,14 @@ func TestGitSeedDiagnosticSurfacesSanitizedDetail(t *testing.T) {
 		"warning: remote git seed detail (untrusted): fatal: unable to checkout working tree\n",
 		"warning: remote git seed detail (untrusted): error: invalid path 'drivers/gpu'\n",
 		"https://***@example.invalid/repo.git",
+		"warning: remote git seed detail (untrusted): evil and split\n",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in %q", want, text)
 		}
 	}
-	if strings.Contains(text, "tok3n") || strings.ContainsAny(text, "\x1b\r") {
+	if strings.Contains(text, "tok3n") || strings.ContainsAny(text, "\x1b\r") ||
+		strings.ContainsAny(text, "‎‏  ‪‫‬‭‮⁦⁧⁨⁩") {
 		t.Fatalf("detail was not sanitized: %q", text)
 	}
 }
@@ -241,6 +244,18 @@ func TestGitSeedCheckoutFailureDisposition(t *testing.T) {
 			}
 		})
 	}
+	// A truncated capture cannot be classified, so it must not authorize the
+	// checkout-failure fallback even when its discarded text looks transportish.
+	t.Run("truncated capture never authorizes fallback", func(t *testing.T) {
+		err := &gitOriginDiagnosticsTruncatedError{err: exec.Command("sh", "-c", "exit "+strconv.Itoa(gitSeedCheckoutFailureExitCode)).Run()}
+		if exitCode(err) != gitSeedCheckoutFailureExitCode {
+			t.Fatalf("fixture exit=%d err=%v", exitCode(err), err)
+		}
+		plan := gitCoherencePlan{RemoteURL: "https://example.test/repo.git", Target: strings.Repeat("a", 40), Tree: strings.Repeat("b", 40)}
+		if reason, fallback := gitSeedRuntimeFallbackResult(plan, "fatal: Failed to connect to example.test port 443", err); fallback || reason != "" {
+			t.Fatalf("truncated capture authorized fallback=%t reason=%q", fallback, reason)
+		}
+	})
 }
 
 func TestGitSeedCaptureLimitPreservesExecutionAndRetry(t *testing.T) {
