@@ -46,7 +46,10 @@ func TestGitSeedFailurePhaseAndPreservation(t *testing.T) {
 			if err == nil || !strings.Contains(string(out), "crabbox-git-seed phase="+phase) {
 				t.Fatalf("missing %s failure diagnostic: err=%v output=%q", phase, err, out)
 			}
-			if phase == "checkout" && (exitCode(err) != gitSeedCheckoutFailureExitCode || exitCode(err) == 128) {
+			// The recoverable checkout status belongs to the POSIX seed; the native
+			// Windows seed keeps its branch-only contract and aborts on a checkout
+			// failure (its callers warn and continue, so nothing regresses there).
+			if runtime.GOOS != "windows" && phase == "checkout" && (exitCode(err) != gitSeedCheckoutFailureExitCode || exitCode(err) == 128) {
 				t.Fatalf("checkout failure exit=%d want=%d and never git's raw fatal code: %v", exitCode(err), gitSeedCheckoutFailureExitCode, err)
 			}
 			var warning bytes.Buffer
