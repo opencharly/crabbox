@@ -564,8 +564,12 @@ crabbox checkpoint restore --provider parallels --parallels-template tahoe-lates
 ```
 
 An archive restore uploads the tarball over SSH and extracts it into the
-workdir. Restoring a non-archive, non-Parallels native checkpoint is an error
-that points you at `checkpoint fork`.
+workdir. A `containerd-commit` restore runs in place: it keeps the lease id,
+claim, SSH key and published ports, re-clones the checkpoint's state volume,
+recreates the container from the committed image, waits for the readiness hook,
+and reports `converged=true` with the convergence evidence. Restoring any other
+non-archive, non-Parallels native checkpoint is an error that points you at
+`checkpoint fork`.
 
 ## fork
 

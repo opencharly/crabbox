@@ -20,9 +20,9 @@ type Provider struct{}
 // credentials, clients, or lifecycle methods are touched.
 func (Provider) BackendCapabilities() core.Backend { return &backend{spec: Provider{}.Spec()} }
 
-// Spec is stable, configuration-free metadata. Native checkpoint, fork and
-// restore features are added by the checkpoint seam; declaring them here while
-// no checkpoint lifecycle exists would be a false capability claim.
+// Spec is stable, configuration-free metadata. The checkpoint, fork and
+// restore features are declared here because the checkpoint seam implements
+// their full lifecycle (containerd-commit).
 func (Provider) Spec() core.ProviderSpec {
 	return core.ProviderSpec{
 		Authentication: core.ProviderAuthentication{ // fresh slices on every call
@@ -46,6 +46,7 @@ func (Provider) Spec() core.ProviderSpec {
 		Features: core.FeatureSet{
 			core.FeatureSSH, core.FeatureCrabboxSync, core.FeatureCleanup, core.FeatureRunSession,
 			core.FeatureCacheVolume,
+			core.FeatureCheckpoint, core.FeatureFork, core.FeatureRestore,
 			core.FeatureDesktop, core.FeatureBrowser, core.FeatureCode, core.FeatureTailscale,
 			core.FeaturePauseResume, core.FeatureClaimExec, core.FeatureFixedCurrentRepoStop,
 		},

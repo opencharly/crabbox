@@ -125,7 +125,7 @@ below need the named image because the capability lives in its layers.
 | gpu `drm` | `/dev/dri` (`/dev/kfd` when present), video/render groups | any image with the userspace driver |
 | gpu `nvidia` | CDI device `nvidia.com/gpu=all` plus the `files.d` mount | any image with the NVIDIA userspace |
 | gpu `virtio` (krun) | `krun.gpu_flags` annotation; never `--device /dev/dri` | `pod-crabbox-gpu` |
-| k3s snapshot/restore | generic checkpoints from repo metadata today; native checkpoint kinds are not offered yet (see below) | `pod-crabbox-k3s` |
+| checkpoints (`containerd-commit`), fork, restore | `nerdctl commit` of the root filesystem plus a state-volume clone; a running source is paused and `/etc/machine-id` is emptied (restored afterwards); GNU `cp` required | any image with GNU coreutils; `pod-crabbox-k3s` for the k3s snapshot/restore use case |
 
 ## Refusals — measured limits only
 
@@ -146,16 +146,42 @@ silently downgraded.
 
 At acquisition the provider also refuses a namespace missing on the reached
 daemon, and reports `criu: auto` narrowing to `off` in the lease output and in
-`crabbox doctor` — the automatic CRIU pre-flight belongs to the checkpoint seam
-and is never implied.
+`crabbox doctor` — the automatic CRIU pre-flight belongs to the `containerd-criu`
+seam and is never implied.
 
 ## Checkpoints
 
 Generic checkpoints (repo metadata, logs, artifacts) work as they do for every
-provider. This provider does **not** yet offer a native `containerd-commit` image
-checkpoint, the restore interface, or `containerd-criu`; declaring those features
-before their lifecycle exists would be a false capability claim. They are the
-next seam of the containerd work.
+provider. The native primitive is the `containerd-commit` kind, opt in with
+`--mode native` (or `--strategy image`):
+
+- **Create** — `crabbox checkpoint create --id <lease> --mode native`. A running
+  source has `/etc/machine-id` saved and emptied over SSH, is paused, committed
+  with `nerdctl commit` (a persistent `CMD`, no `LABEL`), and its state volume is
+  copied into `crabbox-cp-<checkpoint-id>-state` by a helper container. The
+  source is unpaused and its machine-id restored in a finally step. A stopped
+  source is a cold capture: no pause and no SSH step, and the empty machine-id is
+  produced in a derived image. The image must carry GNU `cp`; busybox `cp` drops
+  `trusted.overlay.*` xattrs and is refused before capture.
+- **Verify** — `crabbox checkpoint inspect <id> --verify` checks the recorded tag
+  still resolves to the recorded digest and that the recorded daemon scope
+  (host, daemon id, namespace, runtime, snapshotter, rootless) still matches.
+  Drift exits 7.
+- **Delete** — removes the verified tag and the state-volume clone. A tag that
+  now points at another image is refused.
+- **Fork** — a new lease from the committed image, with the captured state
+  volume cloned into the new lease's volume and fresh lease labels. The host
+  volumes present when the checkpoint was created are recorded and replayed; a
+  checkpoint created without them does not add any.
+- **Restore** — `crabbox checkpoint restore <id> --id <lease>` is bound to the
+  lease the checkpoint was taken from (a different `--id` exits 7 before any
+  daemon call). It keeps the lease id, claim, SSH key and published ports,
+  re-clones the state volume, recreates the container from the image, and
+  reports convergence after the readiness hook. A missing state-volume clone is
+  refused before the live lease is touched.
+
+`containerd-criu` (process checkpoints via `--strategy process`) is a later
+seam and is not offered yet.
 
 A native checkpoint, once it exists, is bound to its lease claim: the same
 containerd daemon ID, namespace and host, and the owning repository. Another

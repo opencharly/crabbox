@@ -430,7 +430,10 @@ type DoctorProvider interface {
 ```
 
 Native checkpoint and fork support follow the same pattern through
-`NativeCheckpointProvider` and `NativeCheckpointForkProvider`. A delegated-run
+`NativeCheckpointProvider` and `NativeCheckpointForkProvider`. A provider whose
+checkpoint can be restored into its own lease also implements
+`NativeCheckpointRestoreProvider`; core dispatches the restore guard to it and
+keeps the kind-specific refusal for every provider that omits it. A delegated-run
 backend has no SSH target for core to resolve or relocate, so it also
 implements `DelegatedCheckpointBackend`: `ResolveCheckpointSource` returns a
 lease the current repository already claims, and `ForkNativeCheckpoint` creates

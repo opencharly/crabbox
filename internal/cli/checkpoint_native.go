@@ -485,6 +485,18 @@ func nativeCheckpointLifecycleProvider(cfg Config, server Server) (NativeCheckpo
 	return lifecycle, ok
 }
 
+// nativeCheckpointRestoreProvider resolves the provider that can restore a
+// recorded native checkpoint into its existing lease. A provider that omits
+// the interface keeps core's refusal for its kind.
+func nativeCheckpointRestoreProvider(record checkpointRecord) (NativeCheckpointRestoreProvider, bool) {
+	provider, err := ProviderFor(record.nativeProvider())
+	if err != nil {
+		return nil, false
+	}
+	restorer, ok := provider.(NativeCheckpointRestoreProvider)
+	return restorer, ok
+}
+
 func waitForDirectAWSImage(ctx context.Context, client *AWSClient, imageID, accountID string, timeout time.Duration, stderr io.Writer) (CoordinatorImage, error) {
 	ctx, cancel := context.WithTimeoutCause(ctx, timeout, Exit(5, "timed out waiting for image %s", imageID))
 	defer cancel()
@@ -749,6 +761,8 @@ func checkpointKindForProviderImage(image CoordinatorImage) string {
 		return checkpointKindMachine0
 	case checkpointKindDockerCommit:
 		return checkpointKindDockerCommit
+	case checkpointKindContainerdCommit:
+		return checkpointKindContainerdCommit
 	case checkpointKindIncus:
 		return checkpointKindIncus
 	case checkpointKindDaytona:
@@ -769,6 +783,8 @@ func checkpointKindForProviderImage(image CoordinatorImage) string {
 		return checkpointKindParallels
 	case "local-container":
 		return checkpointKindDockerCommit
+	case "containerd":
+		return checkpointKindContainerdCommit
 	default:
 		return checkpointKindAWSAMI
 	}
@@ -776,7 +792,7 @@ func checkpointKindForProviderImage(image CoordinatorImage) string {
 
 func checkpointStrategyForKind(kind string) string {
 	switch kind {
-	case checkpointKindAWSAMI, checkpointKindAzure, checkpointKindGCP, checkpointKindMachine0, checkpointKindDockerCommit:
+	case checkpointKindAWSAMI, checkpointKindAzure, checkpointKindGCP, checkpointKindMachine0, checkpointKindDockerCommit, checkpointKindContainerdCommit:
 		return checkpointStrategyImage
 	case checkpointKindAWSEBS, checkpointKindAzureOS, checkpointKindGCPDisk, checkpointKindHetzner, checkpointKindParallels, checkpointKindDaytona, checkpointKindIncus, checkpointKindCloudflare:
 		return checkpointStrategyDiskSnapshot

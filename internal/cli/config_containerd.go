@@ -52,6 +52,11 @@ type ContainerdConfig struct {
 
 	// Host volumes remain an explicit CLI creation action, never file or env input.
 	Volumes []string `flag:"containerd-volume" sources:"flag" help:"bind-mount a host path or named volume into the container; source:destination[:options]; repeatable" flagList:"append-raw"`
+
+	// CheckpointMetadata carries the exact capture scope recorded on a
+	// checkpoint fork or restore. It is runtime-only: never read from a file,
+	// an environment variable, or a flag.
+	CheckpointMetadata map[string]string `sources:"runtime" yaml:"-" json:"-"`
 }
 
 func applyContainerdFileConfig(cfg *Config, file *fileContainerdConfig, source configInputSource) error {

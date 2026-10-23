@@ -658,15 +658,31 @@ func TestKrunRAMMiB(t *testing.T) {
 	}
 }
 
-func TestProviderSpecHasNoNativeCheckpointClaimYet(t *testing.T) {
+// The features are declared only because the lifecycle that backs them exists
+// (the seam-1 guard). The compiler's interface assertions below are the
+// control: removing any implementation breaks this test's build.
+func TestProviderSpecDeclaresTheCheckpointLifecycle(t *testing.T) {
 	spec := (Provider{}).Spec()
 	for _, feature := range []core.Feature{core.FeatureCheckpoint, core.FeatureFork, core.FeatureRestore} {
-		if spec.Features.Has(feature) {
-			t.Fatalf("%s must not be declared until the checkpoint lifecycle exists", feature)
+		if !spec.Features.Has(feature) {
+			t.Fatalf("%s must be declared with the checkpoint lifecycle: %v", feature, spec.Features)
 		}
 	}
 	if !spec.Features.Has(core.FeatureSSH) || !spec.Features.Has(core.FeatureClaimExec) {
 		t.Fatalf("SSH and claim-exec are part of the provider contract: %v", spec.Features)
+	}
+	var provider any = Provider{}
+	if _, ok := provider.(core.NativeCheckpointProvider); !ok {
+		t.Fatal("containerd must implement NativeCheckpointProvider")
+	}
+	if _, ok := provider.(core.NativeCheckpointLifecycleProvider); !ok {
+		t.Fatal("containerd must implement NativeCheckpointLifecycleProvider")
+	}
+	if _, ok := provider.(core.NativeCheckpointForkProvider); !ok {
+		t.Fatal("containerd must implement NativeCheckpointForkProvider")
+	}
+	if _, ok := provider.(core.NativeCheckpointRestoreProvider); !ok {
+		t.Fatal("containerd must implement NativeCheckpointRestoreProvider")
 	}
 }
 

@@ -205,6 +205,14 @@ func (b *backend) verifyNamespace(ctx context.Context, info daemonInfo) error {
 // buildRunArgs renders `nerdctl run` for one lease. Every feature rides SSH:
 // the container publishes sshd on 2222 and never needs nerdctl exec.
 func (b *backend) buildRunArgs(ctx context.Context, leaseID, slug, name, inputsDir, stateVolume, hostPort string, extraPorts []string, keep bool, info daemonInfo) ([]string, error) {
+	return b.buildRunArgsWithLabels(ctx, leaseID, slug, name, inputsDir, stateVolume, hostPort, extraPorts, info,
+		b.leaseLabels(leaseID, slug, info, stateVolume, inputsDir, keep))
+}
+
+// buildRunArgsWithLabels renders the same `nerdctl run` with caller-supplied
+// labels. A checkpoint restore recreates a lease's container from the claim's
+// recorded labels, so expiry and activity stay attached to the same claim.
+func (b *backend) buildRunArgsWithLabels(ctx context.Context, leaseID, slug, name, inputsDir, stateVolume, hostPort string, extraPorts []string, info daemonInfo, labels map[string]string) ([]string, error) {
 	c := b.cfg.Containerd
 	args := append(b.runner().globalArgs(), "run", "-d",
 		"--name", name,
@@ -219,6 +227,7 @@ func (b *backend) buildRunArgs(ctx context.Context, leaseID, slug, name, inputsD
 		"-e", "CRABBOX_DESKTOP="+boolString(b.cfg.Desktop),
 		"-e", "CRABBOX_DESKTOP_ENV="+core.NormalizedDesktopEnv(b.cfg.DesktopEnv),
 		"-e", "CRABBOX_BROWSER="+boolString(b.cfg.Browser),
+		"-e", "CRABBOX_INIT_MODE="+c.InitMode,
 	)
 	for _, mapping := range extraPorts {
 		args = append(args, "-p", mapping)
@@ -336,7 +345,7 @@ func (b *backend) buildRunArgs(ctx context.Context, leaseID, slug, name, inputsD
 		args = append(args, "--device", "/dev/net/tun", "--cap-add", "NET_ADMIN")
 	}
 
-	for key, value := range b.leaseLabels(leaseID, slug, info, stateVolume, inputsDir, keep) {
+	for key, value := range labels {
 		args = append(args, "--label", key+"="+value)
 	}
 
