@@ -145,6 +145,23 @@ func TestGitSeedDiagnosticSurfacesSanitizedDetail(t *testing.T) {
 	}
 }
 
+func TestRedactRemoteURLUserinfo(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"password", "https://user:secret@example.invalid/repo.git", "https://***@example.invalid/repo.git"},
+		{"bare token", "https://ghp_exampletoken@example.invalid/repo.git", "https://***@example.invalid/repo.git"},
+		{"no userinfo", "https://example.invalid/repo.git", "https://example.invalid/repo.git"},
+		{"port no userinfo", "https://example.invalid:8443/repo.git", "https://example.invalid:8443/repo.git"},
+		{"at sign in path", "https://example.invalid:8443/repo@v1.git", "https://example.invalid:8443/repo@v1.git"},
+		{"two urls", "a https://user:pw@one.invalid/x and https://tok@two.invalid/y", "a https://***@one.invalid/x and https://***@two.invalid/y"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := redactRemoteURLUserinfo(tc.in); got != tc.want {
+				t.Fatalf("got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestGitSeedDiagnosticDetailIsBounded(t *testing.T) {
 	var out bytes.Buffer
 	lines := []string{"crabbox-git-seed phase=clone"}

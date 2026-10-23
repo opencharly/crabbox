@@ -170,8 +170,9 @@ func stripRemoteControl(line string) string {
 	return b.String()
 }
 
-// redactRemoteURLUserinfo replaces URL credentials with "***" while keeping the
-// rest of the message readable.
+// redactRemoteURLUserinfo replaces any URL userinfo (a password, or a bare
+// token used as the user) with "***" while keeping the rest of the message
+// readable. Only the authority is inspected, so a '@' in the path survives.
 func redactRemoteURLUserinfo(line string) string {
 	var b strings.Builder
 	for {
@@ -187,7 +188,11 @@ func redactRemoteURLUserinfo(line string) string {
 		if end >= 0 {
 			token, tail = rest[:end], rest[end:]
 		}
-		if at := strings.LastIndex(token, "@"); at >= 0 && strings.Contains(token[:at], ":") {
+		authority := token
+		if slash := strings.IndexByte(authority, '/'); slash >= 0 {
+			authority = authority[:slash]
+		}
+		if at := strings.LastIndex(authority, "@"); at >= 0 {
 			token = "***" + token[at:]
 		}
 		b.WriteString(token)

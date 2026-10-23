@@ -537,8 +537,10 @@ stripped of terminal control characters, has URL credentials redacted as
 `***`, and is limited to 8 lines and 2 KiB, so a failure names its cause
 without letting remote text control the terminal or forge a classified field.
 Paths and endpoint names in the detail are ordinary diagnostics. Capture is
-limited to 16 KiB in memory; oversized or unrecognized output produces an
-`unknown` diagnosis with no detail lines and authorizes no fallback. Existing
+limited to 16 KiB in memory; oversized output produces an `unknown` diagnosis
+with no detail lines, and its discarded text can never authorize a
+transport-failure fallback (the exact-commit exit status keeps its own
+pre-existing fallback). Existing
 Git metadata may still be present; a failed seed has not established that it
 is current or usable.
 
