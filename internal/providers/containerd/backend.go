@@ -58,6 +58,9 @@ func (b *backend) Acquire(ctx context.Context, req core.AcquireRequest) (core.Le
 	if err := b.refuseUnsupportedImageProfile(ctx); err != nil {
 		return core.LeaseTarget{}, err
 	}
+	if err := b.verifySeccompProfile(ctx); err != nil {
+		return core.LeaseTarget{}, err
+	}
 	servers, err := b.listContainers(ctx)
 	if err != nil {
 		return core.LeaseTarget{}, err
@@ -156,12 +159,6 @@ func (b *backend) Acquire(ctx context.Context, req core.AcquireRequest) (core.Le
 	if err := b.runReadinessHook(ctx, leaseID, target); err != nil {
 		rollback()
 		return core.LeaseTarget{}, err
-	}
-	if cfg.Containerd.SeccompProfile != "" && (cfg.Browser || cfg.Desktop) {
-		if !b.hostPathExists(ctx, cfg.Containerd.SeccompProfile) {
-			rollback()
-			return core.LeaseTarget{}, core.Exit(2, "containerd.seccompProfile %s does not exist on the containerd host; a stock seccomp profile breaks Chromium's sandbox, so install the narrow profile from CONTAINERD.md §3.1 (generate it from the installed DefaultProfile() with unshare/clone allowed, keyctl/mount EPERM) and retry", cfg.Containerd.SeccompProfile)
-		}
 	}
 	labels := b.leaseLabels(leaseID, slug, info, stateVolume, inputsDir.dir, req.Keep)
 	labels["published_port"] = hostPort
@@ -1038,6 +1035,21 @@ func (b *backend) runOverTarget(ctx context.Context, target core.SSHTarget, scri
 		req.Stdin = stdin
 	}
 	return b.rt.Exec.Run(ctx, req)
+}
+
+// verifySeccompProfile proves the narrow profile exists before a browser or
+// desktop lease is provisioned. buildRunArgs passes it to the runtime, so a
+// missing file would otherwise surface as a nerdctl run failure after a wasted
+// container start.
+func (b *backend) verifySeccompProfile(ctx context.Context) error {
+	profile := strings.TrimSpace(b.cfg.Containerd.SeccompProfile)
+	if profile == "" || (!b.cfg.Browser && !b.cfg.Desktop) {
+		return nil
+	}
+	if b.hostPathExists(ctx, profile) {
+		return nil
+	}
+	return core.Exit(2, "containerd.seccompProfile %s does not exist on the containerd host; a stock seccomp profile breaks Chromium's sandbox, so install the narrow profile from CONTAINERD.md §3.1 (generate it from the installed DefaultProfile() with unshare/clone allowed, keyctl/mount EPERM) and retry", profile)
 }
 
 func (b *backend) refuseUnsupportedImageProfile(ctx context.Context) error {

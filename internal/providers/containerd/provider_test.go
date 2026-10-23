@@ -384,6 +384,38 @@ func jsonInfo(info daemonInfo) (string, error) {
 	return encoded + `]}`, nil
 }
 
+// A remote call must execute nerdctl on the far side, not a bare flag: the
+// ssh argv carries one command string, so the binary name must be in it.
+func TestRemoteTransportInvokesNerdctl(t *testing.T) {
+	runner := &recordingRunner{}
+	b := testBackend(runner)
+	b.cfg.Containerd.SSHHost = "containerd.example.test"
+	b.cfg.Containerd.SSHUser = "operator"
+	b.cfg.Containerd.SSHKey = "/home/operator/.ssh/id_ed25519"
+	if _, err := b.runner().run(t.Context(), []string{"-n", "default", "info"}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("calls=%d want 1", len(runner.calls))
+	}
+	req := runner.calls[0]
+	if req.Name != "ssh" {
+		t.Fatalf("remote transport ran %q, want ssh", req.Name)
+	}
+	remote := req.Args[len(req.Args)-1]
+	if !strings.HasPrefix(remote, "nerdctl ") {
+		t.Fatalf("remote command %q does not invoke nerdctl", remote)
+	}
+	if !strings.Contains(remote, "info") {
+		t.Fatalf("remote command %q lost the original argv", remote)
+	}
+	for _, forbidden := range []string{"PRIVATE KEY", "BEGIN OPENSSH"} {
+		if strings.Contains(remote, forbidden) {
+			t.Fatalf("key material leaked onto the remote command: %q", remote)
+		}
+	}
+}
+
 func TestRemoteTransportCarriesNoKeyMaterial(t *testing.T) {
 	b := testBackend(&recordingRunner{})
 	b.cfg.Containerd.SSHHost = "containerd.example.test"

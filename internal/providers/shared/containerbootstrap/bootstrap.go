@@ -61,7 +61,7 @@ if [ "${CRABBOX_BROWSER:-0}" = "1" ] && command -v apt-get >/dev/null 2>&1; then
     return 1
   }
   browser_install_failed() {
-    echo "local-container $1; use a prebuilt image with a working browser or a supported Debian image" >&2
+    echo "crabbox $1; use a prebuilt image with a working browser or a supported Debian image" >&2
     exit 127
   }
   if ! has_working_browser; then
@@ -160,7 +160,7 @@ container_paths_overlap() {
 }
 check_host_volume_path() {
   if ! command -v readlink >/dev/null 2>&1; then
-    echo "local-container host volume validation requires readlink" >&2
+    echo "crabbox host volume validation requires readlink" >&2
     exit 127
   fi
   resolve_container_path() {
@@ -185,7 +185,7 @@ check_host_volume_path() {
   for managed_path in "$work_root" "$home_dir" /bin /boot /dev /etc /home /lib /lib64 /proc /root /run /sbin /sys /tmp /usr /var; do
     managed_path="$(resolve_container_path "$managed_path")"
     if container_paths_overlap "$host_path" "$managed_path"; then
-      echo "local-container host volume target $host_path overlaps bootstrap-managed path $managed_path" >&2
+      echo "crabbox host volume target $host_path overlaps bootstrap-managed path $managed_path" >&2
       exit 2
     fi
   done
@@ -193,7 +193,7 @@ check_host_volume_path() {
     [ -n "$cache_path" ] || continue
     cache_path="$(resolve_container_path "$cache_path")"
     if container_paths_overlap "$host_path" "$cache_path"; then
-      echo "local-container host volume target $host_path overlaps bootstrap-managed cache path $cache_path" >&2
+      echo "crabbox host volume target $host_path overlaps bootstrap-managed cache path $cache_path" >&2
       exit 2
     fi
   done

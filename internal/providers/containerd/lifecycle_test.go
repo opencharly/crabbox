@@ -145,6 +145,34 @@ func TestReleaseReportsALeakWhenRMExitsZeroAndTheContainerRemains(t *testing.T) 
 	}
 }
 
+// A browser lease with a missing profile must refuse before any container is
+// provisioned: buildRunArgs passes the path to the runtime, so a late check
+// only turns a clear refusal into a run failure after a wasted start.
+func TestAcquireRefusesAMissingSeccompProfileBeforeProvisioning(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	runner := &recordingRunner{run: func(req core.LocalCommandRequest) (core.LocalCommandResult, error) {
+		switch {
+		case findArg(req.Args, "info"):
+			output, _ := jsonInfo(daemonInfo{ID: "daemon-id", Namespace: "default"})
+			return core.LocalCommandResult{Stdout: output}, nil
+		case findArg(req.Args, "namespace", "ls"):
+			return core.LocalCommandResult{Stdout: "default\n"}, nil
+		case req.Name == "sh" && strings.Contains(strings.Join(req.Args, " "), "test -e"):
+			return core.LocalCommandResult{ExitCode: 1}, nil
+		}
+		return core.LocalCommandResult{}, nil
+	}}
+	b := testBackend(runner)
+	b.cfg.Browser = true
+	_, err := b.Acquire(t.Context(), core.AcquireRequest{Repo: core.Repo{Root: t.TempDir()}})
+	if err == nil || !strings.Contains(err.Error(), "CONTAINERD.md") {
+		t.Fatalf("err=%v, want the missing-profile refusal", err)
+	}
+	if hasRecordedCall(runner.calls, "run") {
+		t.Fatal("a missing seccomp profile must be refused before nerdctl run")
+	}
+}
+
 func hasRecordedCall(calls []core.LocalCommandRequest, want ...string) bool {
 	for _, call := range calls {
 		if findArg(call.Args, want...) {

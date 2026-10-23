@@ -53,7 +53,9 @@ func (r commandRunner) run(ctx context.Context, args []string, stdout, stderr io
 	if !r.remote() {
 		return r.rt.Exec.Run(ctx, core.LocalCommandRequest{Name: "nerdctl", Args: args, Stdout: stdout, Stderr: stderr})
 	}
-	return r.rt.Exec.Run(ctx, core.LocalCommandRequest{Name: "ssh", Args: r.remoteArgv(quoteArgv(args)), Stdout: stdout, Stderr: stderr})
+	// The remote shell needs the binary's name; remoteArgv receives one command
+	// string, so the quoted argv must be prefixed with nerdctl here.
+	return r.rt.Exec.Run(ctx, core.LocalCommandRequest{Name: "ssh", Args: r.remoteArgv("nerdctl " + quoteArgv(args)), Stdout: stdout, Stderr: stderr})
 }
 
 // runShell executes a POSIX shell command on the containerd host. Remote mode
