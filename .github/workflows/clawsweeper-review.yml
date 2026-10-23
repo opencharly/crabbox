@@ -37,7 +37,7 @@ permissions:
 jobs:
   review:
     if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
-    uses: opencharly/.github/.github/workflows/clawsweeper-review.yml@187b7b1f77b36b24525597ddcf9c8b6ebc827888
+    uses: opencharly/.github/.github/workflows/clawsweeper-review.yml@a1f021d1b050148bf34f6412ff9ce9c1bf74317b
     with:
       pr-number: ${{ github.event.pull_request.number }}
     secrets:
