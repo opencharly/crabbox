@@ -66,6 +66,36 @@ jobs:
               CRABBOX_BIN="$PWD/bin/crabbox" \
                 scripts/live-smoke.sh 2>&1 | tee "$RUNNER_TEMP/local-container-smoke.log"
 
+          # The containerd SSH-lease core smoke: acquire -> SSH -> run ->
+          # release on a stock image. Runs as root because nerdctl on a
+          # non-root user selects the per-user rootless daemon, not the
+          # rootful one this row installs. The prepared pod-crabbox* image
+          # rows stay in scripts/live-containerd-smoke.sh for a prepared host;
+          # CRABBOX_LIVE_CONTAINERD_IMAGES=0 keeps this row to the base path.
+          - name: containerd
+            runner: ${{ vars.CI_DOCKER_RUNNER_LABEL || 'opencharly-ubuntu' }}
+            build-cli: true
+            timeout-minutes: 30
+            smoke: |
+              set -o pipefail
+              smoke_repo="$RUNNER_TEMP/crabbox-smoke-repo"
+              mkdir -p "$smoke_repo"
+              # The CI checkout is GitHub's synthetic `refs/pull/N/merge`
+              # commit, which the containerd sync's remote git seed cannot
+              # reproduce (the seed aborts at checkout, exit 128). Sync the
+              # TREE without .git for this row: it still exercises the SSH
+              # lease lifecycle end to end (acquire -> sync -> run -> release),
+              # and the git seed itself is covered by the local-container row.
+              git -C "$PWD" archive HEAD | tar -x -C "$smoke_repo"
+              sudo env \
+                CRABBOX_LIVE=1 \
+                CRABBOX_LIVE_PROVIDERS=containerd \
+                CRABBOX_LIVE_CONTAINERD_STRICT=1 \
+                CRABBOX_LIVE_CONTAINERD_IMAGES=0 \
+                CRABBOX_LIVE_REPO="$smoke_repo" \
+                CRABBOX_BIN="$PWD/bin/crabbox" \
+                "$PWD/scripts/live-smoke.sh" 2>&1 | tee "$RUNNER_TEMP/containerd-smoke.log"
+
           # Read-only doctor readiness contract. Hosted runners do not ship
           # Firecracker or CNI plugins, so the script's own
           # `classification=environment_blocked` outcome is an expected pass:
@@ -122,6 +152,93 @@ jobs:
         if: matrix.name == 'local-container'
         run: rg --version
 
+      - name: Install containerd, nerdctl, and CNI plugins
+        if: matrix.name == 'containerd'
+        env:
+          # nerdctl is not packaged in Ubuntu 24.04; pin the release and its
+          # checksum. A containerd and runc already on the runner image are
+          # used as-is: the Docker runner ships containerd.io, and installing
+          # the Ubuntu `containerd` package would make docker-ce uninstallable
+          # (docker-ce Depends: containerd.io).
+          NERDCTL_VERSION: 2.4.1
+          NERDCTL_SHA256: f6bbf02fd8a299cbcbc71a0bad113c1b63b3f33689bbb7d51b0fa98c6d361d5e
+          CNI_VERSION: 1.9.1
+          CNI_SHA256: b98f74a0f8522f0a83867178729c1aa70f2158f90c45a2ca8fa791db1c76b303
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          if ! command -v containerd >/dev/null 2>&1; then
+            sudo apt-get install -y containerd
+          fi
+          if ! command -v runc >/dev/null 2>&1; then
+            sudo apt-get install -y runc
+          fi
+          sudo systemctl enable --now containerd
+
+          nerdctl_archive="$RUNNER_TEMP/nerdctl-$NERDCTL_VERSION-linux-amd64.tar.gz"
+          curl --disable --fail --location --silent --show-error \
+            --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 60 \
+            --output "$nerdctl_archive" \
+            "https://github.com/containerd/nerdctl/releases/download/v$NERDCTL_VERSION/nerdctl-$NERDCTL_VERSION-linux-amd64.tar.gz"
+          printf '%s  %s\n' "$NERDCTL_SHA256" "$nerdctl_archive" | sha256sum --check --strict
+          sudo tar -xzf "$nerdctl_archive" -C /usr/local/bin nerdctl
+
+          cni_archive="$RUNNER_TEMP/cni-plugins-linux-amd64-v$CNI_VERSION.tgz"
+          curl --disable --fail --location --silent --show-error \
+            --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 60 \
+            --output "$cni_archive" \
+            "https://github.com/containernetworking/plugins/releases/download/v$CNI_VERSION/cni-plugins-linux-amd64-v$CNI_VERSION.tgz"
+          printf '%s  %s\n' "$CNI_SHA256" "$cni_archive" | sha256sum --check --strict
+          sudo mkdir -p /opt/cni/bin
+          sudo tar -xzf "$cni_archive" -C /opt/cni/bin
+
+          # Ephemeral CI host, persistent artefact: the workflow itself is the
+          # durable fix, so providing/loading the module here is NOT the
+          # rulebook's forbidden "works-until-reboot" workaround (that rule
+          # targets a live host whose manual change evaporates on reboot).
+          # Try the module, install the running kernel's extra-modules package
+          # once if it is missing, then retry. The hard assertion in the next
+          # step is unchanged: if the module genuinely cannot be provided, it
+          # fails loudly naming opencharly/layer-containerd#5.
+          if ! sudo modprobe xt_multiport 2>/dev/null; then
+            sudo apt-get install -y "linux-modules-extra-$(uname -r)" >/dev/null 2>&1 || true
+            sudo modprobe xt_multiport 2>/dev/null || true
+          fi
+          # Re-check the two surfaces the assertion reads, without suppressing it.
+          sudo lsmod | grep '^xt_multiport ' || echo "xt_multiport still not loaded; the preflight will fail loudly"
+
+          sudo nerdctl --version
+          sudo nerdctl info --format '{{json .}}' >/dev/null
+          # Docker's containerd ships the `moby` namespace; the provider's
+          # uniform default is `default`. Create it so the base row can
+          # acquire. The provider's own daemon verification stays the hard
+          # check; this only makes the ephemeral host match the contract.
+          sudo nerdctl namespace create default >/dev/null 2>&1 || true
+
+          # The smoke runs as root (a non-root nerdctl selects the rootless
+          # daemon, not the rootful one installed here). Let root's git trust
+          # the runner-owned checkout instead of tripping safe.directory.
+          sudo git config --global --add safe.directory "$PWD"
+
+      - name: Require the CNI portmap kernel extension
+        if: matrix.name == 'containerd'
+        run: |
+          # Two surfaces name the same capability. /proc/net/ip_tables_matches
+          # only lists LEGACY ip_tables matches, so a runner using the nftables
+          # iptables backend can have the module loaded (lsmod) while the proc
+          # file stays silent. Accept either surface; fail only when NEITHER
+          # shows the capability.
+          if ! grep -qw multiport /proc/net/ip_tables_matches && ! lsmod | grep -q '^xt_multiport '; then
+            echo "lsmod (netfilter matches): $(lsmod | grep -E '^(xt_multiport|ip_tables|nf_tables) ' || echo none)" >&2
+            echo "::error::the kernel has no xt_multiport (neither the legacy ip_tables match list nor lsmod shows it); the CNI portmap plugin cannot publish the lease SSH port (opencharly/layer-containerd#5)"
+            exit 1
+          fi
+          if grep -qw multiport /proc/net/ip_tables_matches; then
+            echo "xt_multiport present in /proc/net/ip_tables_matches"
+          else
+            echo "xt_multiport loaded (lsmod); /proc/net/ip_tables_matches does not list it (nftables backend)"
+          fi
+
       - name: Install security-current rsync
         if: matrix.name == 'ssh-localhost'
         env:
@@ -161,6 +278,19 @@ jobs:
 
       - name: Run connector lifecycle smoke
         run: ${{ matrix.smoke }}
+
+      - name: Reject a skipped containerd smoke
+        if: always() && matrix.name == 'containerd'
+        run: |
+          log="$RUNNER_TEMP/containerd-smoke.log"
+          if [[ ! -f "$log" ]]; then
+            echo "::error::the containerd smoke produced no log"
+            exit 1
+          fi
+          if grep -q 'skip:' "$log"; then
+            echo "::error::a skip is not a pass: $(grep -m1 'skip:' "$log")"
+            exit 1
+          fi
 
       - name: Verify native local-container lifecycle and cleanup
         if: matrix.name == 'local-container'
