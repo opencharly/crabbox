@@ -101,7 +101,7 @@ archive path, so `auto` selects its container snapshot.
 
 ## Native strategies
 
-Native checkpoints use one of two provider primitives, selected with
+Native checkpoints use one of three provider primitives, selected with
 `--strategy`:
 
 **`disk-snapshot`** — the default the auto strategy normalizes to.
@@ -139,6 +139,45 @@ loopback-only TightVNC credentials.
 Images are slower to create but preserve complete launch configuration. Direct
 AWS Linux/macOS leases use the AMI path for native checkpoints because AMIs fork
 directly without a coordinator.
+
+**`process`** — opt in with `--strategy process`; currently the `containerd`
+provider only.
+
+| Provider | Kind |
+| --- | --- |
+| containerd (rootful, `runc`) | `containerd-criu` |
+
+A process checkpoint is a CRIU dump of the container's task — processes, memory
+and namespaces — taken with `nerdctl checkpoint create --leave-running`, so the
+source keeps running. The writable layer is **not** captured and is **not**
+rolled back: restoring a process checkpoint returns the process tree, not the
+files, so changes written after the capture remain. Before capturing, the
+provider requires all three of:
+
+- `criu check --unprivileged --feature seccomp_suspend` on the containerd host
+  to exit 0 **and** print `seccomp_suspend is supported` on either stream. The
+  bulk `--extra` form is never used because it returns non-zero on hosts that
+  checkpoint fine.
+- the runtime's `restore --help` to mention `no-subreaper`: containerd passes
+  `-no-subreaper` when it restores, and `crun` rejects that flag with exit 64,
+  so only `runc` can consume a checkpoint this seam creates.
+- a rootful daemon with `runtime: runc` and `containerd.criu: on` (or `auto`). Rootless
+  daemons, `criu: in-container`, and the krun in-guest path are refused with the
+  mechanism named.
+
+Restore is bound to the lease and container the checkpoint was taken from: it
+stops the container (preserving its writable layer), closes Crabbox's
+multiplexed SSH sessions, and runs `start --checkpoint`, keeping the lease id,
+claim, SSH key and published ports. A zombie `STOPPED` task is refused and
+reported instead of forcing the restore. `checkpoint delete` proves the recorded
+daemon scope and the lease-derived checkpoint name before removing it, and
+lease release removes the lease's own process checkpoints **before** the
+container they are scoped to.
+
+`crabbox checkpoint fork` refuses a `containerd-criu` record with the mechanism:
+a CRIU dump is bound to its source container's task and network namespace and
+cannot start a different lease. Capture `--strategy image` when the checkpoint
+must be forkable.
 
 **Hetzner notes.** Direct Hetzner Linux leases with a numeric server ID support
 `--mode native` and create a project snapshot. `--strategy image` is not

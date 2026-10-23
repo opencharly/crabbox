@@ -452,6 +452,13 @@ func (b *backend) ReleaseLease(ctx context.Context, req core.ReleaseLeaseRequest
 	if name == "" {
 		name = core.LeaseProviderName(lease.LeaseID, lease.Server.Labels["slug"])
 	}
+	// A process checkpoint is scoped to its container under the nerdctl data
+	// root: removing the container first leaves it unreachable. Delete the
+	// lease's own checkpoints before the container, and only names derived from
+	// this lease (ownership proof).
+	if err := b.removeOwnedProcessCheckpoints(ctx, lease.LeaseID, name); err != nil {
+		return err
+	}
 	if err := b.stopContainer(ctx, lease, name); err != nil {
 		return err
 	}
@@ -863,9 +870,11 @@ func (b *backend) Doctor(ctx context.Context, req core.DoctorRequest) (core.Doct
 	case "auto":
 		add("skip", "criu", "containerd.criu=auto narrows to off because the automatic pre-flight belongs to the checkpoint seam; set in-container or on to opt in")
 	default:
-		result, err := runner.runShell(ctx, "criu check --unprivileged --feature seccomp_suspend 2>&1", nil, nil)
-		if err != nil || !strings.Contains(result.Stdout, "seccomp_suspend is supported") {
-			add("failed", "criu", "criu check --unprivileged --feature seccomp_suspend did not report `seccomp_suspend is supported`; install a CRIU that supports the seccomp feature and run the probe on the containerd host")
+		// One probe implementation with the checkpoint seam: rc 0 AND the
+		// supported line, on either stream, and never the bulk --extra form.
+		output, rc, err := checkpointCRIUProbe(ctx, runner)
+		if !checkpointCRIUProbeOK(rc, err, output) {
+			add("failed", "criu", "criu check --unprivileged --feature seccomp_suspend did not exit 0 and report `seccomp_suspend is supported` (rc="+strconv.Itoa(rc)+"); install a CRIU that supports the seccomp feature on the containerd host")
 		} else {
 			add("ok", "criu", "criu check rc=0 and seccomp_suspend is supported")
 		}
