@@ -274,6 +274,9 @@ func (b *backend) leaseFromClaim(ctx context.Context, claim core.LeaseClaim, pre
 	target.Port = strconv.Itoa(claim.SSHPort)
 	target.User = b.cfg.Containerd.User
 	target.Key = ""
+	// A resolved lease waits on the same readiness contract as an acquired one;
+	// this target is built here rather than by sshTargetForPort.
+	target = checkpointReadyTarget(b.cfg, target)
 	if err := core.UseStoredTestboxKey(&target, claim.LeaseID); err != nil {
 		return core.LeaseTarget{}, err
 	}
@@ -964,7 +967,7 @@ func (b *backend) sshTargetForPort(ctx context.Context, leaseID, hostPort string
 	// SSH user.
 	target.User = b.cfg.Containerd.User
 	target.Key = ""
-	target.ReadyCheck = leaseReadyCheck(b.cfg.Containerd.WorkRoot)
+	target = checkpointReadyTarget(b.cfg, target)
 	if err := core.UseStoredTestboxKey(&target, leaseID); err != nil {
 		return core.SSHTarget{}, err
 	}

@@ -908,11 +908,18 @@ func checkpointCloneVolume(ctx context.Context, runner commandRunner, cfg core.C
 // must tolerate them or the first capture of every lease fails on the cleanup
 // of a volume that never existed.
 func checkpointVolumeMissing(result core.LocalCommandResult, err error) bool {
-	text := strings.ToLower(result.Stderr + err.Error())
-	if strings.Contains(text, "no such volume") {
-		return true
+	// nerdctl's logfmt output escapes the quotes inside its message
+	// (`msg="volume \"<name>\": not found"`), so normalize them away before
+	// matching the phrasing.
+	text := strings.ToLower(strings.ReplaceAll(result.Stderr, `\`, ""))
+	if err != nil {
+		text += strings.ToLower(strings.ReplaceAll(err.Error(), `\`, ""))
 	}
-	return strings.Contains(text, "volume") && strings.Contains(text, "not found")
+	// Docker: `no such volume: <name>`. nerdctl: `volume "<name>": not found`.
+	// Match each daemon's actual phrasing: a generic "volume ... not found"
+	// would also swallow a real failure such as "volume plugin not found".
+	return strings.Contains(text, "no such volume") ||
+		(strings.Contains(text, `volume "`) && strings.Contains(text, `": not found`))
 }
 
 func checkpointRemoveVolume(ctx context.Context, runner commandRunner, volume string) error {

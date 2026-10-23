@@ -816,9 +816,17 @@ func TestMissingVolumeIsToleratedInEveryDaemonWording(t *testing.T) {
 			t.Errorf("%s: a missing volume must be tolerated", name)
 		}
 	}
-	real := core.LocalCommandResult{ExitCode: 1, Stderr: "volume crabbox-cp-x-state is in use"}
-	if checkpointVolumeMissing(real, errors.New("exit status 1")) {
-		t.Error("an in-use volume was classified as missing")
+	for name, stderr := range map[string]string{
+		"in use":        "volume crabbox-cp-x-state is in use",
+		"plugin absent": "volume plugin not found",
+	} {
+		real := core.LocalCommandResult{ExitCode: 1, Stderr: stderr}
+		if checkpointVolumeMissing(real, errors.New("exit status 1")) {
+			t.Errorf("%s: a real failure was classified as a missing volume", name)
+		}
+	}
+	if checkpointVolumeMissing(core.LocalCommandResult{ExitCode: 1, Stderr: `volume "x": not found`}, nil) != true {
+		t.Error("a nil error must not panic and the nerdctl wording must be tolerated")
 	}
 }
 
