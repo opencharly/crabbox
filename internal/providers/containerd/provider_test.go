@@ -532,15 +532,10 @@ func TestRequestedCapabilityRefusals(t *testing.T) {
 			c.Actions.RunnerLabels = []string{"self-hosted"}
 			c.Containerd.InitMode = "systemd"
 		}, false},
-		{"criu on rootless crun", func(c *core.Config) {
-			c.Containerd.CRIU = "on"
-			c.Containerd.Rootless = true
-		}, true},
-		{"criu on rootless krun accepted", func(c *core.Config) {
-			c.Containerd.CRIU = "on"
-			c.Containerd.Rootless = true
-			c.Containerd.Runtime = "krun"
-		}, false},
+		{"criu on fails closed", func(c *core.Config) { c.Containerd.CRIU = "on" }, true},
+		{"criu in-container fails closed", func(c *core.Config) { c.Containerd.CRIU = "in-container" }, true},
+		{"criu off accepted", func(c *core.Config) { c.Containerd.CRIU = "off" }, false},
+		{"criu auto accepted", func(c *core.Config) { c.Containerd.CRIU = "auto" }, false},
 		{"btrfs rootless", func(c *core.Config) {
 			c.Containerd.Snapshotter = "btrfs"
 			c.Containerd.Rootless = true
@@ -574,19 +569,29 @@ func TestRequestedCapabilityRefusals(t *testing.T) {
 			c.Containerd.GPU = "virtio"
 			c.Containerd.Memory = "8g"
 		}, false},
-		{"krun desktop accepted", func(c *core.Config) {
+		{"krun desktop accepted on the prepared desktop image", func(c *core.Config) {
 			c.Containerd.Runtime = "krun"
+			c.Containerd.Image = "ghcr.io/opencharly/pod-crabbox-desktop"
 			c.Desktop = true
 		}, false},
-		{"krun browser accepted", func(c *core.Config) {
+		{"krun browser accepted on the prepared browser image", func(c *core.Config) {
 			c.Containerd.Runtime = "krun"
+			c.Containerd.Image = "ghcr.io/opencharly/pod-crabbox-browser"
 			c.Browser = true
 		}, false},
 		{"browser without a seccomp profile", func(c *core.Config) {
+			c.Containerd.Image = "ghcr.io/opencharly/pod-crabbox-browser"
 			c.Browser = true
 			c.Containerd.SeccompProfile = ""
 		}, true},
-		{"browser with the narrow profile", func(c *core.Config) { c.Browser = true }, false},
+		{"browser with the narrow profile", func(c *core.Config) {
+			c.Containerd.Image = "ghcr.io/opencharly/pod-crabbox-browser"
+			c.Browser = true
+		}, false},
+		{"desktop on a stock image", func(c *core.Config) { c.Desktop = true }, true},
+		{"browser on a stock image", func(c *core.Config) { c.Browser = true }, true},
+		{"code on a stock image", func(c *core.Config) { c.Code = true }, true},
+		{"tailscale on a stock image", func(c *core.Config) { c.Tailscale.Enabled = true }, true},
 		{"nested on runc accepted", func(c *core.Config) { c.Containerd.Nested = "on" }, false},
 		{"rootless nvidia accepted", func(c *core.Config) {
 			c.Containerd.Rootless = true
@@ -619,6 +624,11 @@ func TestValidateConfigEnums(t *testing.T) {
 		{"bad runtime", func(c *core.Config) { c.Containerd.Runtime = "runc2" }, true},
 		{"bad snapshotter", func(c *core.Config) { c.Containerd.Snapshotter = "zfs" }, true},
 		{"bad gpu", func(c *core.Config) { c.Containerd.GPU = "cuda" }, true},
+		{"bad criu value", func(c *core.Config) { c.Containerd.CRIU = "bogus" }, true},
+		{"criu on fails closed", func(c *core.Config) { c.Containerd.CRIU = "on" }, true},
+		{"criu in-container fails closed", func(c *core.Config) { c.Containerd.CRIU = "in-container" }, true},
+		{"criu off accepted", func(c *core.Config) { c.Containerd.CRIU = "off" }, false},
+		{"criu auto accepted", func(c *core.Config) { c.Containerd.CRIU = "auto" }, false},
 		{"empty namespace", func(c *core.Config) { c.Containerd.Namespace = "" }, true},
 		{"empty image", func(c *core.Config) { c.Containerd.Image = "" }, true},
 	} {
@@ -686,17 +696,58 @@ func TestProviderSpecDeclaresTheCheckpointLifecycle(t *testing.T) {
 	}
 }
 
-func TestContainerdRegistersWithoutAliasCollision(t *testing.T) {
+func TestContainerdRegistersWithoutAnInventedAlias(t *testing.T) {
 	provider, err := core.ProviderFor("containerd")
 	if err != nil || provider.Spec().Name != providerName {
 		t.Fatalf("containerd did not resolve: %v", err)
 	}
-	alias, err := core.ProviderFor("nerdctl")
-	if err != nil || alias.Spec().Name != providerName {
-		t.Fatalf("nerdctl alias did not resolve to containerd: %v", err)
+	if aliases := provider.Spec().Aliases; len(aliases) != 0 {
+		t.Fatalf("containerd must not carry an invented alias: %v", aliases)
+	}
+	if _, err := core.ProviderFor("nerdctl"); err == nil {
+		t.Fatal("nerdctl must not resolve as a provider: it is the CLI tool the provider invokes, not an alias")
 	}
 	container, err := core.ProviderFor("container")
 	if err != nil || container.Spec().Name != "local-container" {
 		t.Fatalf("container must keep resolving to local-container: %v", err)
+	}
+}
+
+func TestConfiguredFeaturesFollowTheConfiguredImage(t *testing.T) {
+	optional := []core.Feature{core.FeatureDesktop, core.FeatureBrowser, core.FeatureCode, core.FeatureTailscale}
+	cfg := testBackend(&recordingRunner{}).cfg
+	for _, feature := range optional {
+		if (Provider{}).ConfiguredFeatures(cfg).Has(feature) {
+			t.Fatalf("%s must not be admitted on the stock image %q", feature, cfg.Containerd.Image)
+		}
+	}
+	for image, feature := range map[string]core.Feature{
+		"ghcr.io/opencharly/pod-crabbox-desktop:v1":   core.FeatureDesktop,
+		"ghcr.io/opencharly/pod-crabbox-browser":      core.FeatureBrowser,
+		"pod-crabbox-code@sha256:deadbeef":            core.FeatureCode,
+		"registry.example:5000/pod-crabbox-tailscale": core.FeatureTailscale,
+	} {
+		cfg.Containerd.Image = image
+		if !(Provider{}).ConfiguredFeatures(cfg).Has(feature) {
+			t.Fatalf("%s must be admitted for image %q", feature, image)
+		}
+	}
+}
+
+func TestConfiguredImageServes(t *testing.T) {
+	for _, tc := range []struct {
+		reference, prepared string
+		want                bool
+	}{
+		{"ghcr.io/opencharly/pod-crabbox-desktop", "pod-crabbox-desktop", true},
+		{"ghcr.io/opencharly/pod-crabbox-desktop:v1", "pod-crabbox-desktop", true},
+		{"pod-crabbox-desktop@sha256:deadbeef", "pod-crabbox-desktop", true},
+		{"registry.example:5000/pod-crabbox-desktop:1", "pod-crabbox-desktop", true},
+		{"ghcr.io/opencharly/pod-crabbox-desktop-extra", "pod-crabbox-desktop", false},
+		{"docker.io/library/ubuntu:24.04", "pod-crabbox-desktop", false},
+	} {
+		if got := configuredImageServes(tc.reference, tc.prepared); got != tc.want {
+			t.Fatalf("configuredImageServes(%q, %q)=%v want %v", tc.reference, tc.prepared, got, tc.want)
+		}
 	}
 }

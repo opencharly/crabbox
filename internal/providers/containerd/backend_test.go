@@ -122,6 +122,47 @@ func TestDoctorReportsCRIUAutoNarrowing(t *testing.T) {
 	}
 }
 
+func TestDoctorFailsClosedOnAnUnimplementedCRIUMode(t *testing.T) {
+	var probes []string
+	runner := &recordingRunner{run: func(req core.LocalCommandRequest) (core.LocalCommandResult, error) {
+		joined := strings.Join(req.Args, " ")
+		if strings.Contains(joined, "criu check") {
+			probes = append(probes, joined)
+		}
+		switch {
+		case strings.Contains(joined, "--version"):
+			return core.LocalCommandResult{Stdout: "nerdctl version 2.2.0"}, nil
+		case strings.Contains(joined, "info"):
+			return core.LocalCommandResult{Stdout: `{"ID":"daemon-id","SecurityOptions":["name=seccomp"]}`}, nil
+		case strings.Contains(joined, "namespace ls"):
+			return core.LocalCommandResult{Stdout: "default\n"}, nil
+		case strings.Contains(joined, "ps -a"):
+			return core.LocalCommandResult{}, nil
+		case strings.Contains(joined, "test -e"):
+			return core.LocalCommandResult{ExitCode: 0}, nil
+		}
+		return core.LocalCommandResult{}, nil
+	}}
+	b := testBackend(runner)
+	b.cfg.Containerd.CRIU = "on"
+	result, err := b.Doctor(t.Context(), core.DoctorRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, check := range result.Checks {
+		if check.Check == "criu" && check.Status == "failed" && strings.Contains(check.Message, "opencharly/crabbox#23") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("criu on must fail closed and name the tracking issue: %+v", result.Checks)
+	}
+	if len(probes) != 0 {
+		t.Fatalf("an unimplemented criu mode must not probe the host: %v", probes)
+	}
+}
+
 func TestNerdctlGlobalArgsOrder(t *testing.T) {
 	b := testBackend(&recordingRunner{})
 	args := b.runner().globalArgs()

@@ -55,7 +55,13 @@ test("matrix rows do not fail fast and are time-bounded", () => {
   )?.[1];
   assert.ok(localContainer, "local-container row exists");
   assert.match(localContainer, /timeout-minutes: 40/);
-  assert.equal((workflow.match(/^ {12}timeout-minutes:/gm) ?? []).length, 1);
+  const containerd = workflow.match(
+    /- name: containerd\n([\s\S]*?)(?=\n {10}- name:)/,
+  )?.[1];
+  assert.ok(containerd, "containerd row exists");
+  assert.match(containerd, /timeout-minutes: 30/);
+  const timeouts = [...workflow.matchAll(/^ {12}timeout-minutes: (\d+)$/gm)].map((m) => m[1]);
+  assert.deepEqual(timeouts.sort(), ["30", "40"]);
 });
 
 test("SSH localhost asserts amd64 only on its hosted x64 lifecycle row", () => {
@@ -86,7 +92,7 @@ test("container matrix rows select the Docker fleet through the org variable", (
     assert.ok(block, `${name} row exists`);
     assert.ok(block.includes("runner: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}"), `${name} uses the exact general runner expression`);
   }
-  for (const name of ["docker-sandbox-trust-boundary", "local-container"]) {
+  for (const name of ["docker-sandbox-trust-boundary", "local-container", "containerd"]) {
     const block = workflow.match(
       new RegExp(`- name: ${name}\\n([\\s\\S]*?)(?=\\n {10}- name:)`),
     )?.[1];
@@ -98,6 +104,46 @@ test("container matrix rows select the Docker fleet through the org variable", (
 test("pull request runs cancel superseded attempts", () => {
   assert.match(workflow, /concurrency:\s*\n\s+group:/);
   assert.match(workflow, /cancel-in-progress:.*pull_request/);
+});
+
+test("the containerd row pins its tools, gates xt_multiport loudly, and rejects a skip", () => {
+  const row = workflow.match(/- name: containerd\n([\s\S]*?)(?=\n {10}- name:)/)?.[1];
+  assert.ok(row, "containerd row exists");
+  assert.match(row, /CRABBOX_LIVE_PROVIDERS=containerd/);
+  assert.match(row, /CRABBOX_LIVE_CONTAINERD_STRICT=1/);
+  assert.match(row, /CRABBOX_LIVE_CONTAINERD_IMAGES=0/);
+  assert.match(row, /sudo env/);
+
+  const install = workflow
+    .split("      - name: Install containerd, nerdctl, and CNI plugins\n")[1]
+    ?.split("\n      - name:")[0];
+  assert.ok(install, "containerd install step exists");
+  assert.match(install, /NERDCTL_VERSION: 2\.4\.1\n/);
+  assert.match(install, /NERDCTL_SHA256: f6bbf02fd8a299cbcbc71a0bad113c1b63b3f33689bbb7d51b0fa98c6d361d5e\n/);
+  assert.match(install, /CNI_VERSION: 1\.9\.1\n/);
+  assert.match(install, /CNI_SHA256: b98f74a0f8522f0a83867178729c1aa70f2158f90c45a2ca8fa791db1c76b303\n/);
+  assert.match(install, /sudo apt-get install -y containerd runc/);
+  assert.match(install, /systemctl enable --now containerd/);
+  assert.match(install, /-C \/opt\/cni\/bin/);
+  assert.match(install, /sha256sum --check --strict/);
+
+  const preflight = workflow
+    .split("      - name: Require the CNI portmap kernel extension\n")[1]
+    ?.split("\n      - name:")[0];
+  assert.ok(preflight, "xt_multiport preflight step exists");
+  assert.match(preflight, /grep -qw multiport \/proc\/net\/ip_tables_matches/);
+  assert.match(preflight, /::error::/);
+  assert.match(preflight, /opencharly\/layer-containerd#5/);
+  assert.match(preflight, /exit 1/);
+  assert.doesNotMatch(preflight, /\|\| true/, "the preflight must not be suppressed");
+
+  const reject = workflow
+    .split("      - name: Reject a skipped containerd smoke\n")[1]
+    ?.split("\n      - name:")[0];
+  assert.ok(reject, "containerd skip-rejection step exists");
+  assert.match(reject, /a skip is not a pass/);
+  assert.match(reject, /skip:/);
+  assert.match(reject, /exit 1/);
 });
 
 for (const scenario of [

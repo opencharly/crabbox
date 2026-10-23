@@ -39,8 +39,6 @@ func (Provider) Spec() core.ProviderSpec {
 			},
 		},
 		Name:    providerName,
-		Aliases: []string{"nerdctl"},
-		Family:  "container",
 		Kind:    core.ProviderKindSSHLease,
 		Targets: []core.TargetSpec{{OS: core.TargetLinux}},
 		Features: core.FeatureSet{
@@ -146,8 +144,72 @@ func (Provider) ConfigShowSection(cfg core.Config) core.ProviderConfigShowSectio
 	}
 }
 
+// preparedImageFeatures names the prepared runner image that carries each
+// optional capability. The base SSH contract runs on any Linux image, but
+// desktop, browser, code and tailscale live in the prepared image's layers
+// (CONTAINERD-IMAGES.md), so they are admitted only when that image is
+// configured.
+var preparedImageFeatures = map[core.Feature]string{
+	core.FeatureDesktop:   "pod-crabbox-desktop",
+	core.FeatureBrowser:   "pod-crabbox-browser",
+	core.FeatureCode:      "pod-crabbox-code",
+	core.FeatureTailscale: "pod-crabbox-tailscale",
+}
+
+// ConfiguredFeatures narrows the static catalog to what the configured image
+// can actually serve. It reads only configuration: it never probes the daemon
+// or the image, so it is usable before a lease exists.
 func (Provider) ConfiguredFeatures(cfg core.Config) core.FeatureSet {
-	return Provider{}.Spec().Features
+	spec := Provider{}.Spec()
+	features := make(core.FeatureSet, 0, len(spec.Features))
+	for _, feature := range spec.Features {
+		image, gated := preparedImageFeatures[feature]
+		if gated && !configuredImageServes(cfg.Containerd.Image, image) {
+			continue
+		}
+		features = append(features, feature)
+	}
+	return features
+}
+
+// configuredImageServes reports whether the configured OCI reference names the
+// prepared image. The reference may carry a registry, a port, a tag and a
+// digest; only the final path segment is compared.
+func configuredImageServes(reference, prepared string) bool {
+	ref := reference
+	if at := strings.Index(ref, "@"); at >= 0 {
+		ref = ref[:at]
+	}
+	if slash, colon := strings.LastIndex(ref, "/"), strings.LastIndex(ref, ":"); colon > slash {
+		ref = ref[:colon]
+	}
+	if slash := strings.LastIndex(ref, "/"); slash >= 0 {
+		ref = ref[slash+1:]
+	}
+	return ref == prepared
+}
+
+// validatePreparedImages refuses a requested feature the configured image
+// cannot serve, before any daemon call, and names the image that can.
+func validatePreparedImages(cfg core.Config) error {
+	requested := []struct {
+		flag    string
+		on      bool
+		feature core.Feature
+	}{
+		{"--desktop", cfg.Desktop, core.FeatureDesktop},
+		{"--browser", cfg.Browser, core.FeatureBrowser},
+		{"--code", cfg.Code, core.FeatureCode},
+		{"--tailscale", cfg.Tailscale.Enabled, core.FeatureTailscale},
+	}
+	configured := Provider{}.ConfiguredFeatures(cfg)
+	for _, req := range requested {
+		if !req.on || configured.Has(req.feature) {
+			continue
+		}
+		return core.Exit(2, "provider=%s cannot serve %s with containerd.image %q; set containerd.image to the prepared image ghcr.io/opencharly/%s, which carries that capability", providerName, req.flag, cfg.Containerd.Image, preparedImageFeatures[req.feature])
+	}
+	return nil
 }
 
 // ValidateRequestedCapabilities refuses only measured real limits, and each
@@ -198,6 +260,9 @@ func validateConfigEnums(cfg core.Config) error {
 			return core.Exit(2, "%s=%q is not supported; use one of %s", enum.key, enum.value, strings.Join(enum.values, ", "))
 		}
 	}
+	if err := validateCRIU(c); err != nil {
+		return err
+	}
 	if strings.TrimSpace(c.Namespace) == "" {
 		return core.Exit(2, "containerd.namespace must not be empty; the uniform default is default")
 	}
@@ -209,12 +274,15 @@ func validateConfigEnums(cfg core.Config) error {
 
 func validateRequestedCapabilities(cfg core.Config) error {
 	c := cfg.Containerd
+	if err := validateCRIU(c); err != nil {
+		return err
+	}
+	if err := validatePreparedImages(cfg); err != nil {
+		return err
+	}
 	krun := c.Runtime == "krun"
 	if (cfg.Actions.Workflow != "" || len(cfg.Actions.RunnerLabels) > 0) && c.InitMode == "direct" {
 		return core.Exit(2, "an Actions runner installs a systemd unit inside the lease, but containerd.initMode=direct runs the bootstrap script as PID 1; set containerd.initMode: systemd (the image init owns the unit)")
-	}
-	if c.CRIU == "on" && c.Rootless && !krun {
-		return core.Exit(2, "CRIU in a rootless lease with runtime %s hits containerd's init-userns gate for seccomp-filtered tasks, the netns switch-back, and map_files; use containerd.runtime: krun (in-guest CRIU) or containerd.criu: in-container (the stated cost is an unconfined seccomp profile and added capabilities)", c.Runtime)
 	}
 	if c.Snapshotter == "btrfs" && c.Rootless {
 		return core.Exit(2, "a rootless user namespace cannot mount the btrfs device that snapshotter btrfs requires (containerd btrfs.go:240-248, NEEDS UPSTREAM); use containerd.snapshotter: native on a btrfs data root, or overlayfs")
@@ -244,6 +312,18 @@ func validateRequestedCapabilities(cfg core.Config) error {
 		}
 	}
 	return nil
+}
+
+// validateCRIU fails closed on the modes this build does not implement.
+// Process checkpoints are seam 3 (opencharly/crabbox#23); until that lands,
+// only off and auto (which already narrows to off) are accepted.
+func validateCRIU(c core.ContainerdConfig) error {
+	switch c.CRIU {
+	case "off", "auto":
+		return nil
+	default:
+		return core.Exit(2, "containerd.criu=%q is not available on this build: process checkpoints are tracked in opencharly/crabbox#23; use containerd.criu: off (auto also narrows to off)", c.CRIU)
+	}
 }
 
 func contains(values []string, want string) bool {

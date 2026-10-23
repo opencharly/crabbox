@@ -4,8 +4,12 @@
 
 ### Added
 
-- containerd: add the `containerd` SSH-lease provider (alias `nerdctl`) with daemon identity and rootless-mode verification, argv builders for crun/runc/krun, private `/crabbox` inputs, pause/resume, port reads, doctor checks, and the shared `containerbootstrap` script that `local-container` also uses. [Issue 2](https://github.com/opencharly/crabbox/issues/2).
+- containerd: add the `containerd` SSH-lease provider with daemon identity and rootless-mode verification, argv builders for crun/runc/krun, private `/crabbox` inputs, pause/resume, port reads, doctor checks, and the shared `containerbootstrap` script that `local-container` also uses. [Issue 2](https://github.com/opencharly/crabbox/issues/2).
 - containerd: native `containerd-commit` checkpoints — pause/commit of the lease root filesystem plus a state-volume clone, with a saved-and-restored `/etc/machine-id`, a GNU `cp` refusal (busybox drops `trusted.overlay.*`), verify/delete/fork, and an in-place restore that keeps the lease id, claim, SSH key and published ports. Adds the provider-neutral `NativeCheckpointRestoreProvider` beside `NativeCheckpointForkProvider`. The shared bootstrap gains the systemd ending, a real headless browser probe, and `docker-cli` beside `docker.io`. [Issue 3](https://github.com/opencharly/crabbox/issues/3).
+
+### Changed
+
+- containerd: the provider no longer carries the invented `nerdctl` alias or a display-only `container` family; `--desktop`/`--browser`/`--code`/`--tailscale` are admitted only on the matching `pod-crabbox-*` prepared image and refused at acquisition on an image that does not carry the capability; `criu: on` and `criu: in-container` fail closed until process checkpoints land. Adds a live Blacksmith CI smoke row and `CRABBOX_LIVE_CONTAINERD_STRICT`/`CRABBOX_LIVE_CONTAINERD_IMAGES` switches to the smoke script. [Issue 24](https://github.com/opencharly/crabbox/issues/24).
 
 ## 0.79.1 - 2026-10-20
 

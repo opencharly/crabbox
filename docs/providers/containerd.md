@@ -2,7 +2,7 @@
 
 Read this when you:
 
-- choose `provider: containerd` (alias `nerdctl`);
+- choose `provider: containerd`;
 - run Crabbox leases through containerd on the local machine or a remote Linux
   host;
 - change `internal/providers/containerd` or the shared
@@ -39,10 +39,10 @@ Local daemon:
 
 ```sh
 crabbox run --provider containerd -- sh -c 'uname -s; id -un'
-crabbox warmup --provider nerdctl --containerd-image docker.io/library/ubuntu:24.04 --slug ct-smoke
-crabbox ssh --provider nerdctl --id ct-smoke
+crabbox warmup --provider containerd --containerd-image docker.io/library/ubuntu:24.04 --slug ct-smoke
+crabbox ssh --provider containerd --id ct-smoke
 crabbox doctor --provider containerd
-crabbox stop --provider nerdctl ct-smoke
+crabbox stop --provider containerd ct-smoke
 ```
 
 A rootless daemon is not inferred from the socket: the provider verifies the
@@ -94,7 +94,7 @@ Flags win over the environment, the repository file, then the user file.
 | `nested` | `off` / `on` | `off` |
 | `stateVolume` | `auto` / `off` | `auto` |
 | `gpu` | `off` / `drm` / `nvidia` / `virtio` | `off` |
-| `criu` | `off` / `on` / `auto` / `in-container` | `auto` |
+| `criu` | `off` / `auto` (`on` and `in-container` land with opencharly/crabbox#23) | `auto` |
 | `cpus` / `memory` | int / size | `0` / empty |
 | `seccompProfile` | path | `/etc/containerd/seccomp/crabbox-userns.json` |
 | `krunGpuFlags` | int | `962` (`1410` is GL-only; never `1283`) |
@@ -127,7 +127,7 @@ below need the named image because the capability lives in its layers.
 | gpu `virtio` (krun) | `krun.gpu_flags` annotation; never `--device /dev/dri` | `pod-crabbox-gpu` |
 | checkpoints (`containerd-commit`), fork, restore | `nerdctl commit` of the root filesystem plus a state-volume clone; a running source is paused and `/etc/machine-id` is emptied (restored afterwards); GNU `cp` required | any image with GNU coreutils; `pod-crabbox-k3s` for the k3s snapshot/restore use case |
 
-## Refusals — measured limits only
+## Refusals — each names the mechanism and a working configuration
 
 Each refusal names the mechanism and a configuration that works. Nothing is
 silently downgraded.
@@ -135,19 +135,19 @@ silently downgraded.
 | Request | Mechanism | Working configuration |
 |---|---|---|
 | Actions runner + `initMode: direct` | the runner installs a systemd unit; direct mode runs the bootstrap as PID 1 | `initMode: systemd` |
-| `criu: on` + rootless + crun/runc | init-userns gate for seccomp-filtered tasks, netns switch-back, `map_files` | `runtime: krun` (in-guest) or `criu: in-container` |
 | `snapshotter: btrfs` + rootless | a rootless user namespace cannot mount the btrfs device (`btrfs.go:240-248`, NEEDS UPSTREAM) | `snapshotter: native` on a btrfs data root, or `overlayfs` |
 | `runtime: krun` + `gpu: nvidia` | the render-server sandbox dev-binds only `/dev/dri` (`handlers/krun.c:699-703`, NEEDS UPSTREAM) | crun/runc + CDI, or `gpu: virtio` on AMD/Intel |
 | `runtime: krun` + `gpu: drm` | krun takes GPUs through `krun.gpu_flags`, never `--device /dev/dri` | `gpu: virtio`, or crun/runc + `gpu: drm` |
 | `gpu: virtio` with crun/runc | virtio GPU flags are a krun handler annotation | `runtime: krun`, or `gpu: drm`/`nvidia` |
 | krun GPU + guest RAM below 4 GiB | the guest OOM-kills Vulkan compute at 1 GiB; the guest sees `memory` minus `krunRamHeadroomMiB` | raise `memory` to at least 4 GiB plus `krunRamHeadroomMiB` (4352m with the default 256 MiB headroom) |
+| `--desktop` / `--browser` / `--code` / `--tailscale` on an image that does not carry it | the capability lives in the prepared image's layers, not the base SSH contract | set `containerd.image` to the matching `pod-crabbox-desktop` / `-browser` / `-code` / `-tailscale` image |
 | browser/desktop without the profile | stock seccomp breaks Chromium's sandbox | install the profile from `CONTAINERD.md` §3.1 |
 | image label `crabbox.krun.network=passt` + `krunNetwork: tsi` | TSI collapses the pod netns and breaks CRIU's loopback probe | `krunNetwork: passt` |
 
 At acquisition the provider also refuses a namespace missing on the reached
-daemon, and reports `criu: auto` narrowing to `off` in the lease output and in
-`crabbox doctor` — the automatic CRIU pre-flight belongs to the `containerd-criu`
-seam and is never implied.
+daemon. `criu: auto` narrows to `off` in the lease output and in `crabbox doctor`;
+`criu: on` and `criu: in-container` fail closed until the process-checkpoint seam
+(opencharly/crabbox#23) lands.
 
 ## Checkpoints
 
@@ -208,7 +208,8 @@ name**, for each `pod-crabbox*` image the host does not have yet. A host without
 a reachable containerd daemon skips visibly; so does a rootless host whose CNI
 `portmap` plugin cannot append its `iptables -m multiport` rule because the
 kernel lacks `xt_multiport` (the host layer owns that prerequisite). Nothing is
-mocked.
+mocked. Set `CRABBOX_LIVE_CONTAINERD_STRICT=1` to turn a skip into a non-zero
+exit, and `CRABBOX_LIVE_CONTAINERD_IMAGES=0` to run only the base row.
 
 ## Related docs
 

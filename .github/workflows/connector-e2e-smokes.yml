@@ -66,6 +66,26 @@ jobs:
               CRABBOX_BIN="$PWD/bin/crabbox" \
                 scripts/live-smoke.sh 2>&1 | tee "$RUNNER_TEMP/local-container-smoke.log"
 
+          # The containerd SSH-lease core smoke: acquire -> SSH -> run ->
+          # release on a stock image. Runs as root because nerdctl on a
+          # non-root user selects the per-user rootless daemon, not the
+          # rootful one this row installs. The prepared pod-crabbox* image
+          # rows stay in scripts/live-containerd-smoke.sh for a prepared host;
+          # CRABBOX_LIVE_CONTAINERD_IMAGES=0 keeps this row to the base path.
+          - name: containerd
+            runner: ${{ vars.CI_DOCKER_RUNNER_LABEL || 'opencharly-ubuntu' }}
+            build-cli: true
+            timeout-minutes: 30
+            smoke: |
+              set -o pipefail
+              sudo env \
+                CRABBOX_LIVE=1 \
+                CRABBOX_LIVE_PROVIDERS=containerd \
+                CRABBOX_LIVE_CONTAINERD_STRICT=1 \
+                CRABBOX_LIVE_CONTAINERD_IMAGES=0 \
+                CRABBOX_BIN="$PWD/bin/crabbox" \
+                "$PWD/scripts/live-smoke.sh" 2>&1 | tee "$RUNNER_TEMP/containerd-smoke.log"
+
           # Read-only doctor readiness contract. Hosted runners do not ship
           # Firecracker or CNI plugins, so the script's own
           # `classification=environment_blocked` outcome is an expected pass:
@@ -122,6 +142,62 @@ jobs:
         if: matrix.name == 'local-container'
         run: rg --version
 
+      - name: Install containerd, nerdctl, and CNI plugins
+        if: matrix.name == 'containerd'
+        env:
+          # nerdctl is not packaged in Ubuntu 24.04; pin the release and its
+          # checksum. containerd and runc come from the Ubuntu archive, whose
+          # package version is fixed by the runner image's release pocket.
+          NERDCTL_VERSION: 2.4.1
+          NERDCTL_SHA256: f6bbf02fd8a299cbcbc71a0bad113c1b63b3f33689bbb7d51b0fa98c6d361d5e
+          CNI_VERSION: 1.9.1
+          CNI_SHA256: b98f74a0f8522f0a83867178729c1aa70f2158f90c45a2ca8fa791db1c76b303
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y containerd runc
+          sudo systemctl enable --now containerd
+
+          nerdctl_archive="$RUNNER_TEMP/nerdctl-$NERDCTL_VERSION-linux-amd64.tar.gz"
+          curl --disable --fail --location --silent --show-error \
+            --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 60 \
+            --output "$nerdctl_archive" \
+            "https://github.com/containerd/nerdctl/releases/download/v$NERDCTL_VERSION/nerdctl-$NERDCTL_VERSION-linux-amd64.tar.gz"
+          printf '%s  %s\n' "$NERDCTL_SHA256" "$nerdctl_archive" | sha256sum --check --strict
+          sudo tar -xzf "$nerdctl_archive" -C /usr/local/bin nerdctl
+
+          cni_archive="$RUNNER_TEMP/cni-plugins-linux-amd64-v$CNI_VERSION.tgz"
+          curl --disable --fail --location --silent --show-error \
+            --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 60 \
+            --output "$cni_archive" \
+            "https://github.com/containernetworking/plugins/releases/download/v$CNI_VERSION/cni-plugins-linux-amd64-v$CNI_VERSION.tgz"
+          printf '%s  %s\n' "$CNI_SHA256" "$cni_archive" | sha256sum --check --strict
+          sudo mkdir -p /opt/cni/bin
+          sudo tar -xzf "$cni_archive" -C /opt/cni/bin
+
+          # The preflight below is the loud gate. Load the module first so a
+          # kernel that HAS xt_multiport is deterministic instead of racing the
+          # first `iptables -m multiport` invocation; a kernel that lacks it
+          # still fails the preflight.
+          sudo modprobe xt_multiport 2>/dev/null || true
+
+          sudo nerdctl --version
+          sudo nerdctl info --format '{{json .}}' >/dev/null
+
+          # The smoke runs as root (a non-root nerdctl selects the rootless
+          # daemon, not the rootful one installed here). Let root's git trust
+          # the runner-owned checkout instead of tripping safe.directory.
+          sudo git config --global --add safe.directory "$PWD"
+
+      - name: Require the CNI portmap kernel extension
+        if: matrix.name == 'containerd'
+        run: |
+          if ! grep -qw multiport /proc/net/ip_tables_matches; then
+            echo "::error::the kernel's ip_tables match list has no 'multiport'; the CNI portmap plugin cannot publish the lease SSH port (opencharly/layer-containerd#5)"
+            exit 1
+          fi
+          echo "xt_multiport present: $(grep -w multiport /proc/net/ip_tables_matches)"
+
       - name: Install security-current rsync
         if: matrix.name == 'ssh-localhost'
         env:
@@ -161,6 +237,19 @@ jobs:
 
       - name: Run connector lifecycle smoke
         run: ${{ matrix.smoke }}
+
+      - name: Reject a skipped containerd smoke
+        if: always() && matrix.name == 'containerd'
+        run: |
+          log="$RUNNER_TEMP/containerd-smoke.log"
+          if [[ ! -f "$log" ]]; then
+            echo "::error::the containerd smoke produced no log"
+            exit 1
+          fi
+          if grep -q 'skip:' "$log"; then
+            echo "::error::a skip is not a pass: $(grep -m1 'skip:' "$log")"
+            exit 1
+          fi
 
       - name: Verify native local-container lifecycle and cleanup
         if: matrix.name == 'local-container'
