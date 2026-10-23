@@ -55,6 +55,13 @@ const (
 	checkpointMetadataCold           = "cold"
 	checkpointMetadataForkImageID    = "fork_image_id"
 	checkpointMetadataForkImageName  = "fork_image_name"
+	// checkpointMetadataProcessCheckpoint is the containerd checkpoint name a
+	// containerd-criu record restores and deletes. The name is derived from the
+	// lease, so it is also the ownership proof.
+	checkpointMetadataProcessCheckpoint = "process_checkpoint"
+	// checkpointMetadataKind records which primitive captured the checkpoint so
+	// verify/delete can dispatch without trusting the ambient configuration.
+	checkpointMetadataKind = "kind"
 )
 
 // machineIDMissing marks a lease whose image had no /etc/machine-id at capture
@@ -80,16 +87,24 @@ var providerOperationRuntime = core.RuntimeForProviderOperation
 // recording runner and cannot stand up a real sshd.
 var waitForCheckpointSSH = core.WaitForSSHReady
 
-// NativeCheckpointCapability declares the containerd-commit primitive. The
-// commit is an image capture, so an explicit disk-snapshot request is refused
-// rather than silently reinterpreted; an explicit image request is the same
-// primitive the default selects.
+// NativeCheckpointCapability declares the two containerd primitives. The
+// default is the containerd-commit image capture; --strategy process selects
+// the CRIU process checkpoint. Every other explicit strategy is refused rather
+// than silently reinterpreted, because each primitive is a different capture
+// contract (an image is forkable, a process checkpoint is not).
 func (Provider) NativeCheckpointCapability(req core.NativeCheckpointRequest) (core.NativeCheckpointCapability, bool) {
 	if strings.TrimSpace(req.Server.CloudID) == "" {
 		return core.NativeCheckpointCapability{}, false
 	}
-	if req.StrategyExplicit && strings.TrimSpace(req.Strategy) != core.CheckpointStrategyImage {
-		return core.NativeCheckpointCapability{}, false
+	if req.StrategyExplicit {
+		switch core.NormalizeCheckpointStrategy(req.Strategy) {
+		case core.CheckpointStrategyProcess:
+			return core.NativeCheckpointCapability{Kind: core.CheckpointKindContainerdCRIU, Direct: true}, true
+		case core.CheckpointStrategyImage:
+			return core.NativeCheckpointCapability{Kind: core.CheckpointKindContainerdCommit, Direct: true}, true
+		default:
+			return core.NativeCheckpointCapability{}, false
+		}
 	}
 	return core.NativeCheckpointCapability{Kind: core.CheckpointKindContainerdCommit, Direct: true}, true
 }
@@ -119,6 +134,9 @@ func (Provider) CreateNativeCheckpoint(ctx context.Context, req core.NativeCheck
 	cfg.Provider = providerName
 	if err := validateCheckpointConfig(cfg); err != nil {
 		return core.NativeCheckpointCreateResult{}, err
+	}
+	if core.NormalizeCheckpointStrategy(req.Strategy) == core.CheckpointStrategyProcess {
+		return createProcessCheckpoint(ctx, cfg, req)
 	}
 	b := checkpointBackend(cfg)
 	info, err := b.verifyDaemon(ctx)
@@ -203,6 +221,9 @@ func (Provider) CreateNativeCheckpoint(ctx context.Context, req core.NativeCheck
 // VerifyNativeCheckpoint fails closed on scope drift and reports whether the
 // recorded tag still resolves to the recorded image.
 func (Provider) VerifyNativeCheckpoint(ctx context.Context, req core.NativeCheckpointResourceRequest) (core.NativeCheckpointVerifyResult, error) {
+	if checkpointResourceKind(req.Image, req.Metadata) == core.CheckpointKindContainerdCRIU {
+		return verifyProcessCheckpoint(ctx, req)
+	}
 	cfg, err := checkpointLoadConfig(req.LoadConfig)
 	if err != nil {
 		return core.NativeCheckpointVerifyResult{}, err
@@ -235,6 +256,9 @@ func (Provider) VerifyNativeCheckpoint(ctx context.Context, req core.NativeCheck
 // DeleteNativeCheckpoint removes the recorded tag only after proving it still
 // names the recorded image, then removes the checkpoint's state-volume clone.
 func (Provider) DeleteNativeCheckpoint(ctx context.Context, req core.NativeCheckpointResourceRequest) error {
+	if checkpointResourceKind(req.Image, req.Metadata) == core.CheckpointKindContainerdCRIU {
+		return deleteProcessCheckpoint(ctx, req)
+	}
 	cfg, err := checkpointLoadConfig(req.LoadConfig)
 	if err != nil {
 		return err
@@ -274,6 +298,9 @@ func (Provider) DeleteNativeCheckpoint(ctx context.Context, req core.NativeCheck
 // ApplyNativeCheckpointForkConfig starts a new lease from the recorded image
 // and replays the recorded lease settings. Acquire clones the state volume.
 func (Provider) ApplyNativeCheckpointForkConfig(req core.NativeCheckpointForkRequest) error {
+	if req.Record.Kind == core.CheckpointKindContainerdCRIU {
+		return core.Exit(2, "containerd-criu process checkpoints cannot be forked: a CRIU dump is bound to the source container's task and network namespace, containerd restores it only through `start --checkpoint` on that same container, and the lease's writable layer is not part of the dump. Capture `--strategy image` for a forkable checkpoint, or `crabbox checkpoint restore` it into the same lease")
+	}
 	if req.Record.Kind != core.CheckpointKindContainerdCommit {
 		return core.Exit(2, "provider=%s does not support checkpoint kind=%s", providerName, req.Record.Kind)
 	}
@@ -297,6 +324,13 @@ func (Provider) ApplyNativeCheckpointForkConfig(req core.NativeCheckpointForkReq
 // the container is recreated from the committed image and the state volume is
 // re-cloned. The lease id, claim, SSH key and published ports are preserved.
 func (Provider) RestoreNativeCheckpoint(ctx context.Context, req core.NativeCheckpointRestoreRequest) (core.NativeCheckpointRestoreResult, error) {
+	if req.Record.Kind == core.CheckpointKindContainerdCRIU {
+		return restoreProcessCheckpoint(ctx, req)
+	}
+	return restoreCommittedCheckpoint(ctx, req)
+}
+
+func restoreCommittedCheckpoint(ctx context.Context, req core.NativeCheckpointRestoreRequest) (core.NativeCheckpointRestoreResult, error) {
 	// Bind the restore to the lease the checkpoint was taken from BEFORE any
 	// daemon call or mutation. Core resolves and claims the requested lease; it
 	// cannot know the checkpoint's owner, so the provider must refuse a restore
@@ -452,7 +486,6 @@ func validateCheckpointConfig(cfg core.Config) error {
 // settings a fork or restore must reproduce.
 func checkpointMetadataForCreate(ctx context.Context, cfg core.Config, req core.NativeCheckpointCreateRequest, info daemonInfo, container string) (map[string]string, error) {
 	labels := req.Server.Labels
-	c := cfg.Containerd
 	// The exact published mappings are replayed by a restore: re-allocating
 	// would change the claim's SSH port and drop the lease's exposures.
 	hostPort, extraPorts := "", []string{}
@@ -467,11 +500,25 @@ func checkpointMetadataForCreate(ctx context.Context, cfg core.Config, req core.
 	if encoded, err := json.Marshal(extraPorts); err == nil {
 		encodedExtra = string(encoded)
 	}
+	metadata := checkpointScopeMetadata(cfg, req.Server, req.LeaseID, info.ID, container)
+	metadata[checkpointMetadataStateVolume] = strings.TrimSpace(labels["state_volume"])
+	metadata[checkpointMetadataCheckpointVol] = containercheckpoint.VolumeName(req.CheckpointID)
+	metadata[checkpointMetadataPublishedPort] = hostPort
+	metadata[checkpointMetadataExtraPorts] = encodedExtra
+	return metadata, nil
+}
+
+// checkpointScopeMetadata is the durable daemon/lease identity every native
+// containerd checkpoint records, independent of which primitive captured it.
+// verify, delete, fork and restore prove this scope before touching anything.
+func checkpointScopeMetadata(cfg core.Config, server core.Server, leaseID, daemonID, container string) map[string]string {
+	labels := server.Labels
+	c := cfg.Containerd
 	encodedVolumes := "[]"
 	if encoded, err := json.Marshal(append([]string(nil), c.Volumes...)); err == nil {
 		encodedVolumes = string(encoded)
 	}
-	metadata := map[string]string{
+	return map[string]string{
 		checkpointMetadataRuntime:        c.Runtime,
 		checkpointMetadataRuntimePath:    runtimePathForConfig(c),
 		checkpointMetadataRootless:       strconv.FormatBool(c.Rootless),
@@ -479,11 +526,9 @@ func checkpointMetadataForCreate(ctx context.Context, cfg core.Config, req core.
 		checkpointMetadataSnapshotter:    c.Snapshotter,
 		checkpointMetadataAddress:        c.Address,
 		checkpointMetadataHost:           hostScopeForConfig(cfg),
-		checkpointMetadataDaemon:         info.ID,
+		checkpointMetadataDaemon:         daemonID,
 		checkpointMetadataContainer:      container,
-		checkpointMetadataLease:          req.LeaseID,
-		checkpointMetadataStateVolume:    strings.TrimSpace(labels["state_volume"]),
-		checkpointMetadataCheckpointVol:  containercheckpoint.VolumeName(req.CheckpointID),
+		checkpointMetadataLease:          leaseID,
 		checkpointMetadataImage:          c.Image,
 		checkpointMetadataSSHUser:        c.User,
 		checkpointMetadataWorkRoot:       c.WorkRoot,
@@ -504,10 +549,7 @@ func checkpointMetadataForCreate(ctx context.Context, cfg core.Config, req core.
 		checkpointMetadataNetwork:        c.Network,
 		checkpointMetadataVolumes:        encodedVolumes,
 		checkpointMetadataInputsDir:      strings.TrimSpace(labels["inputs_dir"]),
-		checkpointMetadataPublishedPort:  hostPort,
-		checkpointMetadataExtraPorts:     encodedExtra,
 	}
-	return metadata, nil
 }
 
 // validateCheckpointForkScope re-proves, at Acquire time, that the fork's

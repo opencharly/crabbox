@@ -676,7 +676,18 @@ func nativeCheckpointCapability(req NativeCheckpointRequest) (NativeCheckpointCa
 	if !ok {
 		return NativeCheckpointCapability{}, false
 	}
-	return capabilityProvider.NativeCheckpointCapability(req)
+	capability, ok := capabilityProvider.NativeCheckpointCapability(req)
+	if !ok {
+		return NativeCheckpointCapability{}, false
+	}
+	// A provider must not silently reinterpret an explicit strategy into a
+	// different primitive. `process` is the containerd CRIU kind by definition;
+	// admitting another kind here would hand the user an image or disk snapshot
+	// they did not ask for.
+	if req.StrategyExplicit && NormalizeCheckpointStrategy(req.Strategy) == checkpointStrategyProcess && capability.Kind != checkpointKindContainerdCRIU {
+		return NativeCheckpointCapability{}, false
+	}
+	return capability, true
 }
 
 func (record checkpointRecord) nativeProvider() string {
@@ -763,6 +774,8 @@ func checkpointKindForProviderImage(image CoordinatorImage) string {
 		return checkpointKindDockerCommit
 	case checkpointKindContainerdCommit:
 		return checkpointKindContainerdCommit
+	case checkpointKindContainerdCRIU:
+		return checkpointKindContainerdCRIU
 	case checkpointKindIncus:
 		return checkpointKindIncus
 	case checkpointKindDaytona:
@@ -794,6 +807,8 @@ func checkpointStrategyForKind(kind string) string {
 	switch kind {
 	case checkpointKindAWSAMI, checkpointKindAzure, checkpointKindGCP, checkpointKindMachine0, checkpointKindDockerCommit, checkpointKindContainerdCommit:
 		return checkpointStrategyImage
+	case checkpointKindContainerdCRIU:
+		return checkpointStrategyProcess
 	case checkpointKindAWSEBS, checkpointKindAzureOS, checkpointKindGCPDisk, checkpointKindHetzner, checkpointKindParallels, checkpointKindDaytona, checkpointKindIncus, checkpointKindCloudflare:
 		return checkpointStrategyDiskSnapshot
 	default:
