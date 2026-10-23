@@ -292,6 +292,21 @@
     "auth": "API key via CRABBOX_CODESANDBOX_API_KEY or CodeSandbox env auth; env-only remote sandbox auth",
     "docs": "codesandbox.md"
   },
+  "containerd": {
+    "status": "built-in",
+    "category": "local-runtime",
+    "substrate": "containerd via nerdctl (crun, runc, or krun)",
+    "location": "local",
+    "ssh": "crabbox-managed",
+    "sync": "crabbox-sync",
+    "gpu": "optional",
+    "lifecycle": "Crabbox",
+    "cleanup": "label-filtered container delete",
+    "bestFit": "containerd leases on the local machine or a remote Linux host, including krun microVM guests",
+    "caveat": "Requires nerdctl and a reachable containerd daemon; remote mode also needs SSH and python3 for port allocation",
+    "auth": "containerd socket access as the invoking user, or SSH to a remote containerd host",
+    "docs": "containerd.md"
+  },
   "crownest": {
     "status": "built-in",
     "category": "delegated-sandbox",

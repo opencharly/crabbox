@@ -1526,6 +1526,7 @@ func allBuiltInProviderNames() []string {
 		"cloudflare-sandbox",
 		"codesandbox",
 		"coder",
+		"containerd",
 		"crownest",
 		"cua",
 		"cubesandbox",

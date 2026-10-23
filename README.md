@@ -340,6 +340,7 @@ Catalog category: `local-runtime`.
 | Provider | Best fit |
 | --- | --- |
 | [apple-container](docs/providers/apple-container.md) | Local Linux containers on Apple silicon. |
+| [containerd](docs/providers/containerd.md) | containerd leases through nerdctl on the local or a remote Linux host, including krun guests. |
 | [serve](docs/providers/serve.md) | Owner-only donated container capacity through a coordinator. |
 | [local-container](docs/providers/local-container.md) | Local Linux tests through Docker or Podman; no cloud account needed. |
 
