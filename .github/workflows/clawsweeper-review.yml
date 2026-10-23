@@ -26,8 +26,17 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
+# ONE REVIEW PER PR HEAD. Every push fires `synchronize`, so several runs can be in flight;
+# without this the SLOWEST one wins the comment and a stale head's review can overwrite a
+# newer one. Cancelling the superseded run is what makes the comment always describe the
+# current head. `cancel-in-progress` needs `actions: write` on the caller's token.
+concurrency:
+  group: clawsweeper-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
+  actions: write
   # Declared because the reusable workflow declares it; the comment and the labels both go
   # through the issues API and are covered by issues: write.
   pull-requests: write
