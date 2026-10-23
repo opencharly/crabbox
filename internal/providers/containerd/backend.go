@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"sort"
 	"strconv"
@@ -15,6 +16,12 @@ import (
 	"github.com/openclaw/crabbox/internal/providers/shared"
 )
 
+// dialFunc and waitForSSHFunc are the two core-owned helpers that bypass
+// Runtime.Exec; they are injectable so a hermetic test can drive Acquire
+// through the remote path without a live SSH host.
+type dialFunc func(addr string, timeout time.Duration) (net.Conn, error)
+type waitForSSHFunc func(context.Context, *core.SSHTarget, io.Writer, string, time.Duration) error
+
 type backend struct {
 	spec core.ProviderSpec
 	cfg  core.Config
@@ -23,6 +30,9 @@ type backend struct {
 	mu       sync.Mutex
 	forwards map[string]*sshForward
 	acquired map[string]core.LeaseTarget
+
+	dialPort dialFunc
+	waitSSH  waitForSSHFunc
 }
 
 type sshForward struct {
@@ -139,9 +149,15 @@ func (b *backend) Acquire(ctx context.Context, req core.AcquireRequest) (core.Le
 		}
 		return core.LeaseTarget{}, shared.LocalCommandError("containerd run", result, err)
 	}
-	if err := b.waitForPort(ctx, hostPort); err != nil {
-		rollback()
-		return core.LeaseTarget{}, err
+	if !b.runner().remote() {
+		// Local mode publishes the port on this host's loopback. Remote mode
+		// publishes it on the REMOTE host's loopback, where only the tunnel
+		// startForward establishes below can reach it; probing locally there
+		// would always time out.
+		if err := b.waitForPort(ctx, hostPort); err != nil {
+			rollback()
+			return core.LeaseTarget{}, err
+		}
 	}
 	target, err := b.sshTargetForPort(ctx, leaseID, hostPort)
 	if err != nil {
@@ -152,7 +168,11 @@ func (b *backend) Acquire(ctx context.Context, req core.AcquireRequest) (core.Le
 		rollback()
 		return core.LeaseTarget{}, err
 	}
-	if err := core.WaitForSSHReady(ctx, &target, b.rt.Stderr, "containerd ssh", core.BootstrapWaitTimeout(cfg)); err != nil {
+	waitForSSH := b.waitSSH
+	if waitForSSH == nil {
+		waitForSSH = core.WaitForSSHReady
+	}
+	if err := waitForSSH(ctx, &target, b.rt.Stderr, "containerd ssh", core.BootstrapWaitTimeout(cfg)); err != nil {
 		rollback()
 		return core.LeaseTarget{}, err
 	}
@@ -966,7 +986,7 @@ func (b *backend) waitForPort(ctx context.Context, port string) error {
 	addr := "127.0.0.1:" + port
 	result, err := shared.Poll(waitCtx, 0, 100*time.Millisecond, shared.SleepContext,
 		func(ctx context.Context) (bool, error) {
-			conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+			conn, err := b.dial(addr)
 			if err != nil {
 				return false, nil
 			}
@@ -983,6 +1003,16 @@ func (b *backend) waitForPort(ctx context.Context, port string) error {
 		return core.Exit(5, "containerd did not publish 127.0.0.1:%s", port)
 	}
 	return nil
+}
+
+func (b *backend) dial(addr string) (net.Conn, error) {
+	dial := b.dialPort
+	if dial == nil {
+		dial = func(addr string, timeout time.Duration) (net.Conn, error) {
+			return net.DialTimeout("tcp", addr, timeout)
+		}
+	}
+	return dial(addr, 500*time.Millisecond)
 }
 
 // runReadinessHook runs an image-provided readiness probe over SSH and reports

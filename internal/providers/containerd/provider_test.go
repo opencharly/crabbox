@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	core "github.com/openclaw/crabbox/internal/cli"
@@ -11,12 +12,16 @@ import (
 )
 
 type recordingRunner struct {
+	mu    sync.Mutex
 	calls []core.LocalCommandRequest
 	run   func(core.LocalCommandRequest) (core.LocalCommandResult, error)
 }
 
 func (r *recordingRunner) Run(_ context.Context, req core.LocalCommandRequest) (core.LocalCommandResult, error) {
+	// The SSH forward runs on its own goroutine; keep the recorder race-free.
+	r.mu.Lock()
 	r.calls = append(r.calls, req)
+	r.mu.Unlock()
 	if r.run != nil {
 		return r.run(req)
 	}

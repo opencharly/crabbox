@@ -413,8 +413,6 @@ func (b *backend) hostScope() string {
 	return "local"
 }
 
-// quoteArgv renders an argv for a remote shell without losing argument
-// boundaries. nerdctl itself is named on the remote command line.
 func cacheVolumeName(volume core.CacheVolumeConfig) string {
 	raw := strings.TrimSpace(volume.Key)
 	if raw == "" {
@@ -443,6 +441,8 @@ func boolString(value bool) string {
 	return "0"
 }
 
+// quoteArgv renders an argv for a remote shell without losing argument
+// boundaries. nerdctl itself is named on the remote command line by run.
 func quoteArgv(args []string) string {
 	quoted := make([]string, 0, len(args))
 	for _, arg := range args {
