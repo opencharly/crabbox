@@ -146,6 +146,9 @@ func TestLeaseReadinessIsTheBootstrapWorkRoot(t *testing.T) {
 	if target.ReadyCheck == "" {
 		t.Fatal("lease ReadyCheck is empty; the generic probe then requires the prepared-image marker /usr/local/bin/crabbox-ready, which a stock image does not ship")
 	}
+	if strings.TrimSpace(b.cfg.Containerd.WorkRoot) == "" {
+		t.Fatal("test backend has no work root; the readiness assertion would be vacuous")
+	}
 	if !strings.Contains(target.ReadyCheck, b.cfg.Containerd.WorkRoot) {
 		t.Fatalf("ReadyCheck %q does not assert the lease work root %q", target.ReadyCheck, b.cfg.Containerd.WorkRoot)
 	}
