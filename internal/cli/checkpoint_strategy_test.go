@@ -4,16 +4,17 @@ import "testing"
 
 func TestCheckpointNativeModeAndRetirementStrategyParity(t *testing.T) {
 	for _, tc := range []struct {
-		name, provider, coordinator string
-		implicit, image, disk       string
+		name, provider, coordinator    string
+		implicit, image, disk, process string
 	}{
-		{"direct AWS Linux", "aws", "", checkpointKindAWSAMI, checkpointKindAWSAMI, "unsupported"},
-		{"broker AWS Linux", "aws", "https://coordinator.example", checkpointKindAWSEBS, checkpointKindAWSAMI, checkpointKindAWSEBS},
-		{"broker Azure Linux", "azure", "https://coordinator.example", checkpointKindAzureOS, checkpointKindAzure, checkpointKindAzureOS},
-		{"broker GCP Linux", "gcp", "https://coordinator.example", checkpointKindGCPDisk, checkpointKindGCP, checkpointKindGCPDisk},
-		{"Docker", "local-container", "", checkpointKindDockerCommit, "unsupported", "unsupported"},
+		{"direct AWS Linux", "aws", "", checkpointKindAWSAMI, checkpointKindAWSAMI, "unsupported", "unsupported"},
+		{"broker AWS Linux", "aws", "https://coordinator.example", checkpointKindAWSEBS, checkpointKindAWSAMI, checkpointKindAWSEBS, "unsupported"},
+		{"broker Azure Linux", "azure", "https://coordinator.example", checkpointKindAzureOS, checkpointKindAzure, checkpointKindAzureOS, "unsupported"},
+		{"broker GCP Linux", "gcp", "https://coordinator.example", checkpointKindGCPDisk, checkpointKindGCP, checkpointKindGCPDisk, "unsupported"},
+		{"Docker", "local-container", "", checkpointKindDockerCommit, "unsupported", "unsupported", "unsupported"},
+		{"containerd", "containerd", "", checkpointKindContainerdCommit, checkpointKindContainerdCommit, "unsupported", checkpointKindContainerdCRIU},
 	} {
-		for _, strategy := range []string{"", checkpointStrategyAuto, checkpointStrategyImage, checkpointStrategyDiskSnapshot} {
+		for _, strategy := range []string{"", checkpointStrategyAuto, checkpointStrategyImage, checkpointStrategyDiskSnapshot, checkpointStrategyProcess} {
 			t.Run(tc.name+"/"+blank(strategy, "default"), func(t *testing.T) {
 				cfg := defaultConfig()
 				cfg.Provider, cfg.TargetOS, cfg.Coordinator = tc.provider, targetLinux, tc.coordinator
@@ -25,6 +26,8 @@ func TestCheckpointNativeModeAndRetirementStrategyParity(t *testing.T) {
 					want = tc.image
 				case checkpointStrategyDiskSnapshot:
 					want = tc.disk
+				case checkpointStrategyProcess:
+					want = tc.process
 				}
 				if got := checkpointCreateMode("native", strategy, cfg, server, target, false); got != want {
 					t.Fatalf("ordinary native kind=%s want=%s", got, want)
