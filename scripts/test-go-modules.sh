@@ -33,7 +33,14 @@ while IFS= read -r -d '' modfile; do
   # tests the rest of the module; the shards own internal/cli.
   packages=(./...)
   if [[ "$rel" == "." ]]; then
-    mapfile -t packages < <(cd "$dir" && go list ./... | grep -v '/internal/cli$' || true)
+    # Capture go list separately: a FAILING go list can still emit a partial
+    # package list, and filtering that would silently skip the package that
+    # failed to load. Fail closed before filtering.
+    if ! list_output="$(cd "$dir" && go list ./...)"; then
+      printf 'go list failed for the root module\n' >&2
+      exit 1
+    fi
+    mapfile -t packages < <(printf '%s\n' "$list_output" | grep -v '/internal/cli$' || true)
     if [[ "${#packages[@]}" -eq 0 ]]; then
       printf 'the root module resolved no packages after excluding internal/cli\n' >&2
       exit 1
