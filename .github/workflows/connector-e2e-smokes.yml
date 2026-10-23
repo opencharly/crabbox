@@ -411,6 +411,7 @@ jobs:
           if [ ! -e /dev/kvm ]; then
             echo "::warning title=krun-guest-boot skipped::/dev/kvm is absent on this runner. No krun runtime was installed and no guest was booted; a runner that exposes /dev/kvm would unblock this bed."
             echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::endgroup::"
             exit 0
           fi
           ls -l /dev/kvm
@@ -418,6 +419,7 @@ jobs:
           if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
             echo "::warning title=krun-guest-boot skipped::/dev/kvm exists but is not readable+writable by $(id -un). No krun runtime was installed and no guest was booted; a runner that grants /dev/kvm access would unblock this bed."
             echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::endgroup::"
             exit 0
           fi
           echo "kvm=present"
@@ -455,14 +457,20 @@ jobs:
         run: |
           set -euo pipefail
           sudo systemctl enable --now containerd
-          if ! command -v nerdctl >/dev/null 2>&1; then
-            archive="$RUNNER_TEMP/nerdctl-$NERDCTL_VERSION-linux-amd64.tar.gz"
-            curl --disable --fail --location --silent --show-error \
-              --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 60 \
-              --output "$archive" \
-              "https://github.com/containerd/nerdctl/releases/download/v$NERDCTL_VERSION/nerdctl-$NERDCTL_VERSION-linux-amd64.tar.gz"
-            printf '%s  %s\n' "$NERDCTL_SHA256" "$archive" | sha256sum --check --strict
-            sudo tar -xzf "$archive" -C /usr/local/bin nerdctl
+          # Unconditional: the pin is the input under test, so a nerdctl the
+          # runner image happens to ship is replaced, never used unverified.
+          archive="$RUNNER_TEMP/nerdctl-$NERDCTL_VERSION-linux-amd64.tar.gz"
+          curl --disable --fail --location --silent --show-error \
+            --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 60 \
+            --output "$archive" \
+            "https://github.com/containerd/nerdctl/releases/download/v$NERDCTL_VERSION/nerdctl-$NERDCTL_VERSION-linux-amd64.tar.gz"
+          printf '%s  %s\n' "$NERDCTL_SHA256" "$archive" | sha256sum --check --strict
+          sudo tar -xzf "$archive" -C /usr/local/bin nerdctl
+          nerdctl_version="$(nerdctl --version)"
+          echo "nerdctl_version=$nerdctl_version"
+          if ! printf '%s\n' "$nerdctl_version" | grep -q "version $NERDCTL_VERSION"; then
+            echo "::error::nerdctl is not the pinned $NERDCTL_VERSION: $nerdctl_version"
+            exit 1
           fi
           if ! command -v runc >/dev/null 2>&1; then
             sudo apt-get update
@@ -509,6 +517,9 @@ jobs:
         if: steps.venue.outputs.available == 'true'
         run: |
           set -euo pipefail
+          # Remove any previous name so the negative is about the runtime, not
+          # the container name in the error text.
+          sudo nerdctl --namespace default rm -f krun-absence >/dev/null 2>&1 || true
           rc=0
           output="$(sudo nerdctl --namespace default run --rm --name krun-absence \
             --runtime krun --net none \
@@ -521,8 +532,8 @@ jobs:
             echo "::error::nerdctl run --runtime krun succeeded before the runtime set was installed; the presence assertion cannot distinguish absence from presence"
             exit 1
           fi
-          if ! printf '%s\n' "$output" | grep -qi 'krun'; then
-            echo "::error::the pre-install failure does not name the krun runtime, so it is not the absence this step must prove: $output"
+          if ! printf '%s\n' "$output" | grep -qE 'invalid runtime name krun|failed to resolve runtime path'; then
+            echo "::error::the pre-install failure does not name the unresolved krun runtime, so it is not the absence this step must prove: $output"
             exit 1
           fi
           echo "presence=failed-before-install (this is the R7 negative half)"
@@ -620,14 +631,18 @@ jobs:
 
       - name: Declare the krun handler in containerd
         if: steps.venue.outputs.available == 'true'
+        env:
+          CONTAINERD_VERSION: 2.4.2
         run: |
           set -euo pipefail
           version="$(containerd --version)"
-          echo "$version"
+          echo "containerd_version=$version"
+          # Exact pin: the handler section and the config shape below are the
+          # v2.4.2 document, and a different daemon must be a deliberate bump.
           case "$version" in
-            *" 2."*|*" v2."*) ;;
+            *"v$CONTAINERD_VERSION "*) ;;
             *)
-              echo "::error::containerd is not 2.x ($version); the krun handler section is [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.krun]"
+              echo "::error::containerd is not the pinned v$CONTAINERD_VERSION ($version); the krun handler section is [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.krun]"
               exit 1
               ;;
           esac
@@ -696,18 +711,19 @@ jobs:
           final="$(sudo nerdctl --namespace default inspect --format '{{.State.Status}}/{{.State.ExitCode}}' "$name")"
           echo "container_final=$final"
 
+          # Anchored ERE: a trailing digit cannot satisfy any of these.
           check() {
-            if ! grep -qF "$1" "$log"; then
+            if ! grep -qE "$1" "$log"; then
               echo "::error::the guest log is missing: $1"
               exit 1
             fi
           }
-          check 'KRUN_PROOF step=guest-boot'
-          check 'KRUN_PROOF pid1_comm=systemd'
-          check 'KRUN_PROOF pid1_cmdline=/sbin/init'
-          check 'KRUN_PROOF kernel=6.12.109'
-          check 'nofile_hard=524288'
-          check 'KRUN_PROOF stop=systemctl-poweroff'
+          check 'KRUN_PROOF step=guest-boot$'
+          check 'KRUN_PROOF pid1_comm=systemd$'
+          check 'KRUN_PROOF pid1_cmdline=/sbin/init *$'
+          check 'KRUN_PROOF kernel=6\.12\.109$'
+          check 'nofile_hard=524288$'
+          check 'KRUN_PROOF stop=systemctl-poweroff$'
           if [ "$final" != "exited/0" ]; then
             echo "::error::the container finished as $final, want exited/0"
             exit 1
