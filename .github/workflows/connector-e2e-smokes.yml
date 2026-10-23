@@ -26,6 +26,10 @@ on:
         description: Run clean desktop provisioning and browser resizing proof only
         type: boolean
         default: false
+      krun-guest-boot:
+        description: Run the krun guest boot proof on a KVM-capable runner
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -40,7 +44,7 @@ env:
 
 jobs:
   hermetic:
-    if: ${{ !inputs.desktop-resize-only }}
+    if: ${{ !inputs.desktop-resize-only && !inputs.krun-guest-boot }}
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout-minutes || 15 }}
@@ -371,3 +375,317 @@ jobs:
           path: dist/desktop-resize-proof
           if-no-files-found: error
           retention-days: 30
+
+  # The krun guest boot, proved end to end on the KVM-capable Blacksmith fleet.
+  #
+  # Dispatch-only: it compiles libkrunfw's guest kernel (linux-6.12.109), libkrun
+  # and crun from source, which is minutes of CPU and does not belong on every
+  # PR. It runs on the Blacksmith label because that fleet exposes /dev/kvm —
+  # measured in run 40026929314, `kvm=ok` — which the earlier
+  # "impossible on the default fleet" conclusion denied.
+  #
+  # The shape is ABSENCE -> PERFORM -> PRESENCE, and the PRESENCE assertion is
+  # run once BEFORE the runtime set is installed (R7: it must fail without the
+  # install) and once after.
+  krun-guest-boot:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.krun-guest-boot }}
+    name: krun-guest-boot
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
+    timeout-minutes: 90
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: ABSENCE — the /dev/kvm measurement and the missing runtime set
+        id: venue
+        run: |
+          set -u -o pipefail
+
+          echo "::group::/dev/kvm on this runner"
+          if [ ! -e /dev/kvm ]; then
+            echo "::warning title=krun-guest-boot skipped::/dev/kvm is absent on this runner. No krun runtime was installed and no guest was booted; a runner that exposes /dev/kvm would unblock this bed."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ls -l /dev/kvm
+          grep -m1 -E 'vmx|svm' /proc/cpuinfo || echo "no vmx/svm flag in /proc/cpuinfo"
+          if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+            echo "::warning title=krun-guest-boot skipped::/dev/kvm exists but is not readable+writable by $(id -un). No krun runtime was installed and no guest was booted; a runner that grants /dev/kvm access would unblock this bed."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "kvm=present"
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+
+          echo "::group::Absent before the install"
+          sudo systemctl enable --now containerd
+          if command -v krun >/dev/null 2>&1; then
+            echo "krun-binary=present path=$(command -v krun)"
+          else
+            echo "krun-binary=absent"
+          fi
+          if ldconfig -p | grep -q 'libkrun\.so\.1'; then
+            echo "libkrun=present"
+          else
+            echo "libkrun=absent"
+          fi
+          if sudo containerd config dump 2>/dev/null | grep -q 'containerd\.runtimes\.krun'; then
+            echo "krun-handler=declared"
+          else
+            echo "krun-handler=absent"
+          fi
+          echo "::endgroup::"
+
+      - name: Prepare nerdctl and the pinned proof guest
+        if: steps.venue.outputs.available == 'true'
+        env:
+          # Same pin, checksum and install path as the containerd row above.
+          NERDCTL_VERSION: 2.4.1
+          NERDCTL_SHA256: f6bbf02fd8a299cbcbc71a0bad113c1b63b3f33689bbb7d51b0fa98c6d361d5e
+          # The guest base, pinned by digest: the tag `24.04` moves, the digest
+          # does not.
+          BASE_IMAGE: docker.io/library/ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
+        run: |
+          set -euo pipefail
+          sudo systemctl enable --now containerd
+          if ! command -v nerdctl >/dev/null 2>&1; then
+            archive="$RUNNER_TEMP/nerdctl-$NERDCTL_VERSION-linux-amd64.tar.gz"
+            curl --disable --fail --location --silent --show-error \
+              --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 60 \
+              --output "$archive" \
+              "https://github.com/containerd/nerdctl/releases/download/v$NERDCTL_VERSION/nerdctl-$NERDCTL_VERSION-linux-amd64.tar.gz"
+            printf '%s  %s\n' "$NERDCTL_SHA256" "$archive" | sha256sum --check --strict
+            sudo tar -xzf "$archive" -C /usr/local/bin nerdctl
+          fi
+          if ! command -v runc >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y runc
+          fi
+          nerdctl --version
+          sudo nerdctl --namespace default namespace create default >/dev/null 2>&1 || true
+
+          # The guest is an ordinary Ubuntu image plus the systemd-as-PID-1
+          # pieces the krun boundary needs. It is assembled through containerd
+          # itself (run a builder with the host network and the assets bind
+          # mounted, then commit it), not through the runner's Docker daemon:
+          # on this fleet the Docker overlayfs extractor fails on the image's
+          # /boot entry (measured in run 40026929314, local-container row), and
+          # Docker is not the engine under test here.
+          sudo nerdctl --namespace default rm -f krun-proof-builder >/dev/null 2>&1 || true
+          sudo nerdctl --namespace default pull "$BASE_IMAGE"
+          sudo nerdctl --namespace default run --name krun-proof-builder \
+            --net host \
+            -v "$PWD/scripts/krun-guest-proof:/proof:ro" \
+            -v /etc/resolv.conf:/etc/resolv.conf:ro \
+            "$BASE_IMAGE" \
+            sh -c 'apt-get update \
+              && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends systemd systemd-sysv procps util-linux \
+              && rm -rf /var/lib/apt/lists/* \
+              && cp /proof/krun-proof.sh /usr/local/bin/krun-proof \
+              && cp /proof/krun-proof.service /etc/systemd/system/krun-proof.service \
+              && mkdir -p /usr/lib/systemd/system-shutdown /etc/systemd/system/multi-user.target.wants \
+              && cp /proof/krun-poweroff.sh /usr/lib/systemd/system-shutdown/krun-poweroff \
+              && chmod 0755 /usr/local/bin/krun-proof /usr/lib/systemd/system-shutdown/krun-poweroff \
+              && ln -sf /dev/null /etc/systemd/system/serial-getty@hvc0.service \
+              && ln -sf /etc/systemd/system/krun-proof.service /etc/systemd/system/multi-user.target.wants/krun-proof.service \
+              && printf "%s\n" "kernel.pid_max=32768" > /etc/sysctl.d/50-pid-max.conf'
+          # The committed CMD (not a --entrypoint override) is what libkrun's
+          # init reads out of /.krun_config.json as the guest's PID 1.
+          sudo nerdctl --namespace default commit \
+            --change 'CMD ["/sbin/init"]' \
+            krun-proof-builder "krun-proof:$GITHUB_SHA"
+          sudo nerdctl --namespace default rm -f krun-proof-builder
+          sudo nerdctl --namespace default image inspect "krun-proof:$GITHUB_SHA" >/dev/null
+          echo "image=krun-proof:$GITHUB_SHA built from $BASE_IMAGE"
+
+      - name: R7 — the presence assertion fails before the runtime set is installed
+        if: steps.venue.outputs.available == 'true'
+        run: |
+          set -euo pipefail
+          rc=0
+          output="$(sudo nerdctl --namespace default run --rm --name krun-absence \
+            --runtime krun --net none \
+            --ulimit nofile=524288:524288 \
+            -e KRUN_INIT_PID1=1 \
+            "krun-proof:$GITHUB_SHA" 2>&1)" || rc=$?
+          printf '%s\n' "$output"
+          echo "rc=$rc"
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::nerdctl run --runtime krun succeeded before the runtime set was installed; the presence assertion cannot distinguish absence from presence"
+            exit 1
+          fi
+          if ! printf '%s\n' "$output" | grep -qi 'krun'; then
+            echo "::error::the pre-install failure does not name the krun runtime, so it is not the absence this step must prove: $output"
+            exit 1
+          fi
+          echo "presence=failed-before-install (this is the R7 negative half)"
+          sudo nerdctl --namespace default rm -f krun-absence >/dev/null 2>&1 || true
+
+      - name: Install the krun build toolchain
+        if: steps.venue.outputs.available == 'true'
+        env:
+          RUST_VERSION: "1.88.0"
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential autoconf automake libtool pkg-config git curl ca-certificates \
+            flex bison bc libelf-dev libssl-dev cpio kmod rsync xz-utils zstd \
+            python3 python3-pyelftools patchelf \
+            libsystemd-dev libprotobuf-c-dev libcap-dev libseccomp-dev \
+            libjson-c-dev libmount-dev go-md2man
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --no-modify-path
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup run "$RUST_VERSION" rustc --version
+
+      - name: Build libkrunfw v5.6.2 (guest kernel 6.12.109)
+        if: steps.venue.outputs.available == 'true'
+        env:
+          LIBKRUNFW_VERSION: v5.6.2
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$LIBKRUNFW_VERSION" \
+            https://github.com/containers/libkrunfw "$RUNNER_TEMP/libkrunfw"
+          cd "$RUNNER_TEMP/libkrunfw"
+          # libkrunfw's Makefile treats a NON-EMPTY ARCH as the KERNEL's arch
+          # spelling and derives GUESTARCH=$(ARCH). The OCI spelling `amd64`
+          # would copy config-libkrunfw_amd64, which does not exist (the file
+          # is config-libkrunfw_x86_64) — the build then dies at `cp`.
+          export ARCH=x86_64
+          make -j"$(nproc)"
+          sudo make install
+          sudo ldconfig
+          ldconfig -p | grep 'libkrunfw\.so\.5'
+
+      - name: Build libkrun v1.19.6 (the 1.x API crun's handler resolves)
+        if: steps.venue.outputs.available == 'true'
+        env:
+          LIBKRUN_VERSION: v1.19.6
+          RUST_VERSION: "1.88.0"
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$LIBKRUN_VERSION" \
+            https://github.com/containers/libkrun "$RUNNER_TEMP/libkrun"
+          cd "$RUNNER_TEMP/libkrun"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          RUSTUP_TOOLCHAIN="$RUST_VERSION" make -j"$(nproc)"
+          sudo make install
+          # libkrun's Makefile installs to $(PREFIX)/lib64 on Linux, and
+          # Ubuntu's loader does not search /usr/local/lib64 by default.
+          echo '/usr/local/lib64' | sudo tee /etc/ld.so.conf.d/krun.conf >/dev/null
+          sudo ldconfig
+          ldconfig -p | grep 'libkrun\.so\.1'
+          test -f /usr/local/include/libkrun.h
+
+      - name: Build crun at ca04fdb6 with libkrun support
+        if: steps.venue.outputs.available == 'true'
+        env:
+          # The one commit carrying both the passt start path and the /proc
+          # remount (src/libcrun/handlers/krun.c:824-838); no release has both.
+          CRUN_COMMIT: ca04fdb6c26f0c8259871f2cccd0e6e652ec03ce
+        run: |
+          set -euo pipefail
+          git clone https://github.com/containers/crun "$RUNNER_TEMP/crun"
+          cd "$RUNNER_TEMP/crun"
+          git checkout --detach "$CRUN_COMMIT"
+          ./autogen.sh
+          ./configure --prefix=/usr --with-libkrun
+          make -j"$(nproc)"
+          sudo make install
+          # crun selects the krun handler by the binary's name.
+          sudo ln -sf /usr/bin/crun /usr/bin/krun
+          crun --version
+          crun --version | grep -q '+LIBKRUN'
+
+      - name: Declare the krun handler in containerd
+        if: steps.venue.outputs.available == 'true'
+        run: |
+          set -euo pipefail
+          version="$(containerd --version)"
+          echo "$version"
+          case "$version" in
+            *" 2."*|*" v2."*) ;;
+            *)
+              echo "::error::containerd is not 2.x ($version); the krun handler section is [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.krun]"
+              exit 1
+              ;;
+          esac
+          sudo containerd config dump > "$RUNNER_TEMP/containerd.toml"
+          python3 -I - "$RUNNER_TEMP/containerd.toml" <<'PY'
+          import re
+          import sys
+
+          path = sys.argv[1]
+          config = open(path).read()
+          match = re.search(r'^\[plugins\."([^"]+)"\.containerd\.runtimes\]', config, re.M)
+          if not match:
+              sys.exit("no CRI runtimes table in the containerd config")
+          plugin = match.group(1)
+          if plugin != "io.containerd.cri.v1.runtime":
+              sys.exit("CRI plugin id is %r, want io.containerd.cri.v1.runtime" % plugin)
+          if re.search(r'^\[plugins\."%s"\.containerd\.runtimes\.krun\]' % re.escape(plugin), config, re.M):
+              sys.exit("a krun handler is already declared; refusing to duplicate it")
+          config += (
+              "\n[plugins.'%s'.containerd.runtimes.krun]\n"
+              '  runtime_type = "io.containerd.runc.v2"\n'
+              '  pod_annotations = ["krun.*"]\n'
+              "  [plugins.'%s'.containerd.runtimes.krun.options]\n"
+              '    BinaryName = "/usr/bin/krun"\n'
+              "    SystemdCgroup = true\n" % (plugin, plugin)
+          )
+          open(path, "w").write(config)
+          PY
+          sudo install -m 0644 "$RUNNER_TEMP/containerd.toml" /etc/containerd/config.toml
+          sudo systemctl restart containerd
+          sudo containerd config dump | grep -A6 'containerd\.runtimes\.krun'
+
+      - name: PRESENCE — boot the guest and assert from inside it
+        if: steps.venue.outputs.available == 'true'
+        run: |
+          set -euo pipefail
+          image="krun-proof:$GITHUB_SHA"
+          name=krun-proof
+          sudo nerdctl --namespace default rm -f "$name" >/dev/null 2>&1 || true
+          sudo nerdctl --namespace default run -d --name "$name" \
+            --runtime krun --net none \
+            --ulimit nofile=524288:524288 \
+            -e KRUN_INIT_PID1=1 \
+            "$image"
+
+          state="$(sudo nerdctl --namespace default inspect --format '{{.State.Status}}' "$name")"
+          echo "container_state=$state"
+          test "$state" = "running"
+
+          # nerdctl wait is the synchronization primitive: it returns when the
+          # guest has powered itself off. No polling loop, no sleep, and no
+          # signal is sent from the host.
+          wait_rc=0
+          timeout 600 sudo nerdctl --namespace default wait "$name" || wait_rc=$?
+          echo "nerdctl_wait_rc=$wait_rc"
+
+          log="$RUNNER_TEMP/krun-guest.log"
+          sudo nerdctl --namespace default logs "$name" | tee "$log"
+          final="$(sudo nerdctl --namespace default inspect --format '{{.State.Status}}/{{.State.ExitCode}}' "$name")"
+          echo "container_final=$final"
+
+          grep -q 'KRUN_PROOF step=guest-boot' "$log"
+          grep -q 'KRUN_PROOF pid1_comm=systemd' "$log"
+          grep -q 'KRUN_PROOF kernel=6.12.109' "$log"
+          grep -q 'KRUN_PROOF nofile_hard=' "$log"
+          grep -q 'KRUN_PROOF stop=systemctl-poweroff' "$log"
+          test "$final" = "exited/0"
+          test "$wait_rc" -eq 0
+
+      - name: Diagnose the krun guest
+        if: failure() && steps.venue.outputs.available == 'true'
+        run: |
+          sudo nerdctl --namespace default inspect krun-proof 2>&1 || true
+          sudo nerdctl --namespace default logs krun-proof 2>&1 || true
+          sudo journalctl -u containerd --no-pager -n 100 2>&1 || true
+          sudo containerd config dump 2>&1 | grep -B2 -A6 'containerd\.runtimes\.krun' || true
