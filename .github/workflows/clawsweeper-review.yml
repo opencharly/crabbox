@@ -16,10 +16,11 @@
 # has, including the auto-merge app key; the review needs exactly one.
 #
 # PRs THAT CAN ACTUALLY RUN IT. The trigger is `pull_request`, so GitHub withholds secrets and
-# grants a read-only token in two cases: a PR from a fork, and a Dependabot PR (whose actor is
-# `dependabot[bot]`, even though its head repo IS this repository). In both, the org-internal
-# image pull and the comment post cannot succeed. Rather than pretend, the job is gated off for
-# both; the advisory review simply does not run there, and the required gate still does.
+# grants a read-only token in two cases: a PR from a fork, and a Dependabot PR (whose AUTHOR is
+# `dependabot[bot]` and whose head repo IS this repository, so only the author identifies it).
+# In both, the org-internal image pull and the comment post cannot succeed. Rather than pretend,
+# the job is gated off for both; the advisory review simply does not run there, and the required
+# gate still does.
 name: ClawSweeper review
 
 on:
