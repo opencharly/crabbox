@@ -1,14 +1,26 @@
 # ClawSweeper review — the ADVISORY half of this repo's PR validation.
 #
-# One line of policy: the engine, the image pin, the model endpoint and the comment
-# format all live in opencharly/.github's reusable workflow (R2). This file names the
-# event and the PR; nothing else.
+# One line of policy: the engine, the image pin, the model endpoint and the comment format
+# all live in opencharly/.github's reusable workflow (R2). This file names the event, the
+# PR, the ref and the ONE secret.
 #
-# It is NOT a required check and can never block a merge — the required gate is
-# `validate / validate` (pr-validator.yml). Upstream's `clawsweeper-dispatch.yml` sends
-# PR events to OpenClaw's hosted service over OIDC; this fork has no trust relationship
-# there, so that workflow stays disabled and this one runs the review self-hosted on the
-# charly fleet instead.
+# ADVISORY ONLY — it is not a required check and can never block a merge. The required gate
+# is `validate / validate` (pr-validator.yml). Upstream's `clawsweeper-dispatch.yml` sends PR
+# events to OpenClaw's hosted service over OIDC; this fork has no trust relationship there,
+# so that workflow stays disabled and this one runs the review self-hosted on the charly
+# fleet instead.
+#
+# PINNED BY COMMIT, not `@main`: this repo's own `workflow action references are immutable`
+# test requires a full SHA, and a branch ref would give any future change on that branch this
+# repo's secrets.
+#
+# ONE SECRET, named. `secrets: inherit` would hand the called workflow EVERY secret this repo
+# has, including the auto-merge app key; the review needs exactly one.
+#
+# SAME-REPOSITORY PRs ONLY. The trigger is `pull_request`, so GitHub withholds secrets and
+# grants a read-only token for a PR from a fork — the org-internal image pull and the comment
+# post both need more than that. Rather than pretend, the job is gated off for forks; the
+# advisory review simply does not run there, and the required gate still does.
 name: ClawSweeper review
 
 on:
@@ -24,9 +36,9 @@ permissions:
 
 jobs:
   review:
-    uses: opencharly/.github/.github/workflows/clawsweeper-review.yml@main
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: opencharly/.github/.github/workflows/clawsweeper-review.yml@187b7b1f77b36b24525597ddcf9c8b6ebc827888
     with:
       pr-number: ${{ github.event.pull_request.number }}
-    # The org secret AI_REVIEW_API_KEY reaches the reusable workflow through the caller;
-    # a called workflow cannot read org secrets on its own.
-    secrets: inherit
+    secrets:
+      AI_REVIEW_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}
