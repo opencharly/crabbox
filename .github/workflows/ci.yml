@@ -325,7 +325,10 @@ jobs:
   windows-pond-mesh-cancellation:
     name: Windows Pond Mesh Cancellation
     needs: [windows-native-contracts, windows-powershell-architecture]
-    if: ${{ !cancelled() }}
+    # A FIFTH Windows job, reached through `needs:` rather than `runs-on`. It is guarded for
+    # the same reason as the other four: with its Windows dependencies skipped it has nothing
+    # to verify, and its `!cancelled()` would otherwise run it and fail on missing artefacts.
+    if: ${{ !cancelled() && vars.ENABLE_NATIVE_OS_CI == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 5
     steps:
