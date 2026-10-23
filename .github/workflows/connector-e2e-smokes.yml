@@ -390,7 +390,13 @@ jobs:
   krun-guest-boot:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.krun-guest-boot }}
     name: krun-guest-boot
-    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
+    # NOT the generic `opencharly` label: that pool spans every tier, and the
+    # 32-vCPU tier as deployed does not expose /dev/kvm. The 8-vCPU tier is the
+    # one that measured `kvm=ok` (run 40026929314, `charly-ci-8vcpu-5-2`) after
+    # distro-ubuntu#60 taught the tier to pass through a host CPU. The venue
+    # step below still records /dev/kvm and skips visibly if a pod is not yet
+    # rolled.
+    runs-on: ${{ vars.CI_KRUN_RUNNER_LABEL || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 90
     steps:
       - name: Check out
