@@ -137,6 +137,7 @@ test("the containerd row pins its tools, gates xt_multiport loudly, and rejects 
     ?.split("\n      - name:")[0];
   assert.ok(preflight, "xt_multiport preflight step exists");
   assert.match(preflight, /grep -qw multiport \/proc\/net\/ip_tables_matches/);
+  assert.match(preflight, /lsmod \| grep -q '\^xt_multiport '/);
   assert.match(preflight, /::error::/);
   assert.match(preflight, /opencharly\/layer-containerd#5/);
   assert.match(preflight, /exit 1/);

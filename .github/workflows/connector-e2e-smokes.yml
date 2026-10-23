@@ -208,12 +208,21 @@ jobs:
       - name: Require the CNI portmap kernel extension
         if: matrix.name == 'containerd'
         run: |
-          if ! grep -qw multiport /proc/net/ip_tables_matches; then
+          # Two surfaces name the same capability. /proc/net/ip_tables_matches
+          # only lists LEGACY ip_tables matches, so a runner using the nftables
+          # iptables backend can have the module loaded (lsmod) while the proc
+          # file stays silent. Accept either surface; fail only when NEITHER
+          # shows the capability.
+          if ! grep -qw multiport /proc/net/ip_tables_matches && ! lsmod | grep -q '^xt_multiport '; then
             echo "lsmod (netfilter matches): $(lsmod | grep -E '^(xt_multiport|ip_tables|nf_tables) ' || echo none)" >&2
-            echo "::error::the kernel's ip_tables match list has no 'multiport'; the CNI portmap plugin cannot publish the lease SSH port (opencharly/layer-containerd#5)"
+            echo "::error::the kernel has no xt_multiport (neither the legacy ip_tables match list nor lsmod shows it); the CNI portmap plugin cannot publish the lease SSH port (opencharly/layer-containerd#5)"
             exit 1
           fi
-          echo "xt_multiport present: $(grep -w multiport /proc/net/ip_tables_matches)"
+          if grep -qw multiport /proc/net/ip_tables_matches; then
+            echo "xt_multiport present in /proc/net/ip_tables_matches"
+          else
+            echo "xt_multiport loaded (lsmod); /proc/net/ip_tables_matches does not list it (nftables backend)"
+          fi
 
       - name: Install security-current rsync
         if: matrix.name == 'ssh-localhost'
