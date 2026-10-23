@@ -14,9 +14,20 @@ function createFixture(t, crabboxBody) {
   const bin = path.join(dir, "bin");
   fs.mkdirSync(bin);
   const calls = path.join(dir, "calls.jsonl");
-  for (const command of ["go", "npm"]) {
-    writeExecutable(path.join(bin, command), "#!/usr/bin/env node\nprocess.exit(0);\n");
-  }
+  writeExecutable(
+    path.join(bin, "go"),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+// The smoke runs scripts/test-go-modules.sh, which resolves the root module's
+// packages to exclude internal/cli. Model that call, or the script's
+// empty-package guard fails the smoke for a reason unrelated to its subject.
+if (args[0] === "list") {
+  process.stdout.write("example.test/fixture\\nexample.test/fixture/internal/cli\\n");
+}
+process.exit(0);
+`,
+  );
+  writeExecutable(path.join(bin, "npm"), "#!/usr/bin/env node\nprocess.exit(0);\n");
   const fakeCrabbox = path.join(dir, "crabbox");
   writeExecutable(
     fakeCrabbox,
