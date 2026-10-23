@@ -48,7 +48,7 @@ jobs:
     # a security posture worth keeping. The verdict LOGIC is therefore frozen at this
     # commit while the prompt and the engine pin stay live org variables
     # (`AI_REVIEW_PROMPT`, `CHARLY_VERSION`). Bump deliberately — see .github/FORK.md.
-    uses: opencharly/.github/.github/workflows/pr-validator.yml@8e0bf3c3d8d66ed9fe61439424caef9a8fed5928 # main 2026-10-22
+    uses: opencharly/.github/.github/workflows/pr-validator.yml@529e6534c0f4c441c9d8cd4d68768df724e1a7d5 # opencharly/.github#236
     with:
       pr-number: ${{ github.event.pull_request.number }}
       ai_review_provider: ${{ vars.AI_REVIEW_PROVIDER }}
