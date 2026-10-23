@@ -624,11 +624,14 @@ jobs:
           cd "$RUNNER_TEMP/crun"
           git checkout --detach "$CRUN_COMMIT"
           ./autogen.sh
-          ./configure --prefix=/usr --with-libkrun
+          # A private prefix: the runner image may ship its own /usr/bin/crun,
+          # and overwriting it would be a baseline alteration the reset could
+          # not undo. The krun entry point below is the name containerd uses.
+          ./configure --prefix=/usr/local --with-libkrun
           make -j"$(nproc)"
           sudo make install
           # crun selects the krun handler by the binary's name.
-          sudo ln -sf /usr/bin/crun /usr/bin/krun
+          sudo ln -sf /usr/local/bin/crun /usr/bin/krun
           crun --version
           crun --version | grep -q '+LIBKRUN'
 

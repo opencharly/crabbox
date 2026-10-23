@@ -10,7 +10,9 @@
 set -euo pipefail
 
 sudo rm -f /usr/bin/krun
-sudo rm -f /usr/bin/crun
+# crun is installed under /usr/local (a private prefix), so the image's own
+# /usr/bin/crun, if any, is never overwritten or removed.
+sudo rm -f /usr/local/bin/crun
 sudo rm -f /usr/local/lib64/libkrun.so*
 sudo rm -f /usr/local/lib64/pkgconfig/libkrun.pc
 sudo rm -f /usr/local/include/libkrun.h
