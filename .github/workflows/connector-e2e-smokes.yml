@@ -40,7 +40,10 @@ env:
 
 jobs:
   hermetic:
-    if: ${{ !inputs.desktop-resize-only }}
+    # The `apple-vm` matrix entry is Apple Silicon and cannot run on this org's fleet.
+    # Skipped rather than removed, so the gap stays visible and one variable re-enables it;
+    # the Linux matrix entries are unaffected.
+    if: ${{ !inputs.desktop-resize-only && (matrix.runner != 'xcode-27' || vars.ENABLE_NATIVE_OS_CI == 'true') }}
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout-minutes || 15 }}
