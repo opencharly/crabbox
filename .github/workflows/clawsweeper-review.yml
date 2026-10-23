@@ -28,7 +28,8 @@ on:
 
 permissions:
   contents: read
-  # ONE comment per pull request.
+  # Declared because the reusable workflow declares it; the comment and the labels both go
+  # through the issues API and are covered by issues: write.
   pull-requests: write
   # The advisory labels live on issues: clawsweeper:reviewed / clawsweeper:needs-attention.
   issues: write
