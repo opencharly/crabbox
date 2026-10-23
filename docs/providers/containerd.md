@@ -45,6 +45,15 @@ crabbox doctor --provider containerd
 crabbox stop --provider nerdctl ct-smoke
 ```
 
+A rootless daemon is not inferred from the socket: the provider verifies the
+reached daemon's mode and fails closed on a mismatch, so name it explicitly
+(`CRABBOX_CONTAINERD_ROOTLESS=true` or `containerd.rootless: true`):
+
+```sh
+crabbox run --provider containerd --containerd-rootless -- sh -c 'uname -s; id -un'
+crabbox doctor --provider containerd --containerd-rootless
+```
+
 Remote containerd host:
 
 ```sh
@@ -131,7 +140,7 @@ silently downgraded.
 | `runtime: krun` + `gpu: nvidia` | the render-server sandbox dev-binds only `/dev/dri` (`handlers/krun.c:699-703`, NEEDS UPSTREAM) | crun/runc + CDI, or `gpu: virtio` on AMD/Intel |
 | `runtime: krun` + `gpu: drm` | krun takes GPUs through `krun.gpu_flags`, never `--device /dev/dri` | `gpu: virtio`, or crun/runc + `gpu: drm` |
 | `gpu: virtio` with crun/runc | virtio GPU flags are a krun handler annotation | `runtime: krun`, or `gpu: drm`/`nvidia` |
-| krun GPU + `memory` below 4 GiB | the guest OOM-kills Vulkan compute at 1 GiB | raise `memory` (guest RAM is memory minus `krunRamHeadroomMiB`) |
+| krun GPU + guest RAM below 4 GiB | the guest OOM-kills Vulkan compute at 1 GiB; the guest sees `memory` minus `krunRamHeadroomMiB` | raise `memory` to at least 4 GiB plus `krunRamHeadroomMiB` (4352m with the default 256 MiB headroom) |
 | browser/desktop without the profile | stock seccomp breaks Chromium's sandbox | install the profile from `CONTAINERD.md` §3.1 |
 | image label `crabbox.krun.network=passt` + `krunNetwork: tsi` | TSI collapses the pod netns and breaks CRIU's loopback probe | `krunNetwork: passt` |
 

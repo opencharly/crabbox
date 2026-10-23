@@ -114,21 +114,27 @@ func (b *backend) Acquire(ctx context.Context, req core.AcquireRequest) (core.Le
 	}
 	fmt.Fprintf(b.rt.Stderr, "provisioning provider=%s lease=%s slug=%s namespace=%s runtime=%s image=%s keep=%v\n",
 		providerName, leaseID, slug, cfg.Containerd.Namespace, cfg.Containerd.Runtime, cfg.Containerd.Image, req.Keep)
-	result, err := b.runner().run(ctx, args, nil, b.rt.Stderr)
-	containerID := strings.TrimSpace(result.Stdout)
-	if err != nil || containerID == "" {
-		_ = b.removeContainer(context.WithoutCancel(ctx), name)
-		if err == nil {
-			err = core.Exit(2, "nerdctl run did not return a container id")
-		}
-		return core.LeaseTarget{}, shared.LocalCommandError("containerd run", result, err)
-	}
 	rollback := func() {
 		b.stopForward(leaseID)
 		_ = b.removeContainer(context.WithoutCancel(ctx), name)
 		if stateVolume != "" {
 			_ = b.removeVolume(context.WithoutCancel(ctx), stateVolume)
 		}
+	}
+	result, err := b.runner().run(ctx, args, nil, b.rt.Stderr)
+	containerID := strings.TrimSpace(result.Stdout)
+	if err != nil || containerID == "" {
+		// nerdctl creates the named state volume before the container starts, so a
+		// failed start leaves the volume behind unless the same rollback that
+		// covers the later stages runs here too.
+		rollback()
+		if err == nil {
+			err = core.Exit(2, "nerdctl run did not return a container id")
+		}
+		if reason, ok := portmapUnavailable(result); ok {
+			return core.LeaseTarget{}, core.Exit(2, "containerd could not publish the lease SSH port 127.0.0.1:%s: %s; run the lease on a host with the kernel xt_multiport extension (opencharly/layer-containerd#5) or on a network that does not publish ports", hostPort, reason)
+		}
+		return core.LeaseTarget{}, shared.LocalCommandError("containerd run", result, err)
 	}
 	if err := b.waitForPort(ctx, hostPort); err != nil {
 		rollback()
@@ -302,7 +308,10 @@ func (b *backend) listContainers(ctx context.Context) ([]core.LeaseView, error) 
 		if id == "" {
 			continue
 		}
-		inspect, err := b.runner().nerdctlOutput(ctx, "inspect", "--format", "{{json .}}", id)
+		// nerdctl's default `inspect` shape is a JSON array. The `--format
+		// '{{json .}}'` form emits one object per line, which is a different
+		// contract and cannot be decoded into the array below.
+		inspect, err := b.runner().nerdctlOutput(ctx, "inspect", id)
 		if err != nil {
 			return nil, shared.LocalCommandError("nerdctl inspect", inspect, err)
 		}
@@ -502,6 +511,20 @@ func containerNotFound(result core.LocalCommandResult) bool {
 	return strings.Contains(text, "no such container") || strings.Contains(text, "not found")
 }
 
+// portmapUnavailable recognises the CNI portmap failure that a host without the
+// kernel xt_multiport extension produces, so the error names the host
+// prerequisite instead of a wall of nerdctl output.
+func portmapUnavailable(result core.LocalCommandResult) (string, bool) {
+	text := result.Stderr + "\n" + result.Stdout
+	switch {
+	case strings.Contains(text, "multiport"):
+		return "the CNI portmap plugin needs the xt_multiport kernel extension, which this host lacks", true
+	case strings.Contains(text, "CNI-HOSTPORT-DNAT"):
+		return "the CNI portmap plugin could not install the host DNAT rule", true
+	}
+	return "", false
+}
+
 // Cleanup deletes claims first, then proves and deletes matched orphans.
 func (b *backend) Cleanup(ctx context.Context, req core.CleanupRequest) error {
 	scope := Provider{}.ClaimScope(b.cfg)
@@ -570,6 +593,17 @@ func (b *backend) Cleanup(ctx context.Context, req core.CleanupRequest) error {
 		if err := b.removeContainer(ctx, view.Name); err != nil {
 			return err
 		}
+		// An orphan carries the same provider-owned resources a claim does; a
+		// container-only delete leaks its state volume, inputs and lease key.
+		if volume := strings.TrimSpace(view.Labels["state_volume"]); volume != "" {
+			if err := b.removeVolume(ctx, volume); err != nil {
+				return err
+			}
+		}
+		if err := b.removeInputs(ctx, view.Labels["inputs_dir"]); err != nil {
+			return err
+		}
+		core.RemoveStoredTestboxKey(leaseID)
 		fmt.Fprintf(b.rt.Stderr, "cleanup: deleted orphan containerd container=%s lease=%s\n", view.Name, leaseID)
 	}
 	return nil
@@ -750,9 +784,14 @@ func (b *backend) Doctor(ctx context.Context, req core.DoctorRequest) (core.Doct
 		}
 	}
 	if profile := strings.TrimSpace(b.cfg.Containerd.SeccompProfile); profile != "" {
-		if b.hostPathExists(ctx, profile) {
+		switch {
+		case !b.cfg.Browser && !b.cfg.Desktop:
+			// The profile is only applied to browser and desktop leases; reporting
+			// its absence as a failure on every plain lease is a false alarm.
+			add("skip", "seccomp-profile", profile+" is required only for browser and desktop leases")
+		case b.hostPathExists(ctx, profile):
 			add("ok", "seccomp-profile", profile+" present=true")
-		} else {
+		default:
 			add("failed", "seccomp-profile", profile+" is missing; install the narrow profile from CONTAINERD.md §3.1")
 		}
 	}

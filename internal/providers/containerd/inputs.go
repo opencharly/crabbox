@@ -106,8 +106,10 @@ func (b *backend) removeInputs(ctx context.Context, dir string) error {
 	if strings.TrimSpace(dir) == "" {
 		return nil
 	}
+	parent := filepath.Dir(dir)
 	if b.runner().remote() {
-		result, err := b.runner().runShell(ctx, "rm -rf "+core.ShellQuote(dir), nil, nil)
+		script := "rm -rf " + core.ShellQuote(dir) + "; rmdir " + core.ShellQuote(parent) + " 2>/dev/null || true"
+		result, err := b.runner().runShell(ctx, script, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -116,7 +118,17 @@ func (b *backend) removeInputs(ctx context.Context, dir string) error {
 		}
 		return nil
 	}
-	return os.RemoveAll(dir)
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	// The lease directory holds only the inputs mount; remove it when empty so a
+	// released lease leaves no empty directory behind.
+	if parent != dir {
+		if entries, err := os.ReadDir(parent); err == nil && len(entries) == 0 {
+			_ = os.Remove(parent)
+		}
+	}
+	return nil
 }
 
 func writeFileAtomic(path, content string) error {

@@ -54,26 +54,33 @@ fi
 
 # A rootless bridge lease publishes its SSH port through the CNI portmap
 # plugin. Some hosts lack the kernel extension that plugin appends.
-skip_portmap_failure() {
+portmap_unavailable() {
   local output="$1"
-  if [[ "$output" == *multiport* || "$output" == *CNI-HOSTPORT-DNAT* ]]; then
-    log "skip: this host cannot publish the lease SSH port: the CNI portmap plugin needs the xt_multiport kernel extension, which is missing (opencharly/layer-containerd#5); the provider's daemon verification, image pull and argv were correct"
-    return 0
-  fi
-  return 1
+  [[ "$output" == *multiport* || "$output" == *CNI-HOSTPORT-DNAT* ]]
 }
+
+# A host that cannot publish ports skips every run row, but the image rows are
+# still walked so each absent pod-crabbox* image skips visibly BY NAME instead
+# of being hidden behind the first host-level skip.
+host_cannot_publish=""
 
 run_row() {
   local label="$1"
   shift
   local output
   log "$label"
+  if [[ -n "$host_cannot_publish" ]]; then
+    log "skip: $label — $host_cannot_publish"
+    return 0
+  fi
   if output="$("$crabbox" run --provider containerd --ttl 10m --idle-timeout 5m -- "$@" 2>&1)"; then
     printf '%s\n' "$output"
     return 0
   fi
-  if skip_portmap_failure "$output"; then
-    exit 0
+  if portmap_unavailable "$output"; then
+    host_cannot_publish="this host cannot publish the lease SSH port: the CNI portmap plugin needs the xt_multiport kernel extension, which is missing (opencharly/layer-containerd#5); the provider's daemon verification, image pull and argv were correct"
+    log "skip: $label — $host_cannot_publish"
+    return 0
   fi
   printf '%s\n' "$output" >&2
   return 1

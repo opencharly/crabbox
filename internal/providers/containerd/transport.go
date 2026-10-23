@@ -175,7 +175,7 @@ func (b *backend) verifyDaemon(ctx context.Context) (daemonInfo, error) {
 		if info.rootless() {
 			mode = "rootless"
 		}
-		return daemonInfo{}, core.Exit(2, "reached containerd daemon %s is %s but containerd.rootless=%v; a non-root process pointed at a rootful socket silently reroutes to the rootless daemon; set containerd.address to the %s socket (rootless: $XDG_RUNTIME_DIR/containerd-rootless/containerd.sock) or correct containerd.rootless", info.ID, mode, want, mode)
+		return daemonInfo{}, core.Exit(2, "reached containerd daemon %s is %s but containerd.rootless=%v; a non-root process pointed at a rootful socket silently reroutes to the user's rootless daemon; set containerd.rootless: true when the caller is non-root (nerdctl selects the rootless daemon), or point containerd.address at the socket of a daemon whose mode matches containerd.rootless", info.ID, mode, want)
 	}
 	if err := b.verifyNamespace(ctx, info); err != nil {
 		return daemonInfo{}, err
@@ -465,13 +465,17 @@ func (b *backend) imageLabel(ctx context.Context, key string) (string, error) {
 	if err != nil {
 		return "", shared.LocalCommandError("nerdctl image inspect", result, err)
 	}
+	// nerdctl reports image config labels under Config.Labels, not at the top
+	// level. Reading the wrong level made every label-sensitive refusal dead.
 	var inspected struct {
-		Labels map[string]string `json:"Labels"`
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
 	}
 	if err := json.Unmarshal([]byte(result.Stdout), &inspected); err != nil {
 		return "", nil
 	}
-	return inspected.Labels[key], nil
+	return inspected.Config.Labels[key], nil
 }
 
 func (b *backend) now() time.Time {

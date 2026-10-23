@@ -302,7 +302,74 @@ func TestDaemonModeComesFromSecurityOptions(t *testing.T) {
 			if err == nil && info.rootless() != tc.wantRoot {
 				t.Fatalf("rootless=%v want %v", info.rootless(), tc.wantRoot)
 			}
+			if err != nil && tc.configured && !strings.Contains(err.Error(), "containerd.rootless: true") {
+				t.Fatalf("a mode mismatch must name the working configuration: %v", err)
+			}
 		})
+	}
+}
+
+// nerdctl reports image config labels under Config.Labels; reading the top
+// level made the krun/TSI refusal unreachable.
+func TestImageLabelReadsConfigLabels(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		inspect     string
+		want        string
+		wantRefusal bool
+	}{
+		{"passt label", `{"Id":"sha256:a","Config":{"Labels":{"crabbox.krun.network":"passt"}}}`, "passt", true},
+		{"no label", `{"Id":"sha256:a","Config":{"Labels":{}}}`, "", false},
+		{"top-level label is not the contract", `{"Id":"sha256:a","Labels":{"crabbox.krun.network":"passt"}}`, "", false},
+		{"untagged index without config", `{"Id":"","RepoTags":["<untagged>"]}`, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &recordingRunner{run: func(core.LocalCommandRequest) (core.LocalCommandResult, error) {
+				return core.LocalCommandResult{Stdout: tc.inspect}, nil
+			}}
+			b := testBackend(runner)
+			b.cfg.Containerd.Runtime = "krun"
+			b.cfg.Containerd.KrunNetwork = "tsi"
+			got, err := b.imageLabel(t.Context(), "crabbox.krun.network")
+			if err != nil || got != tc.want {
+				t.Fatalf("label=%q err=%v want %q", got, err, tc.want)
+			}
+			err = b.refuseUnsupportedImageProfile(t.Context())
+			if (err != nil) != tc.wantRefusal {
+				t.Fatalf("refusal=%v want %v", err, tc.wantRefusal)
+			}
+			if tc.wantRefusal && !strings.Contains(err.Error(), "krunNetwork: passt") {
+				t.Fatalf("refusal must name the working configuration: %v", err)
+			}
+		})
+	}
+}
+
+// The narrow seccomp profile applies only to browser and desktop leases; a
+// missing profile must not fail doctor on every plain lease.
+func TestDoctorSkipsSeccompProfileWithoutBrowserOrDesktop(t *testing.T) {
+	runner := &recordingRunner{run: func(req core.LocalCommandRequest) (core.LocalCommandResult, error) {
+		switch {
+		case findArg(req.Args, "--version"):
+			return core.LocalCommandResult{Stdout: "nerdctl version 2.4.1"}, nil
+		case findArg(req.Args, "info"):
+			output, _ := jsonInfo(daemonInfo{ID: "daemon-id", Namespace: "default"})
+			return core.LocalCommandResult{Stdout: output}, nil
+		case findArg(req.Args, "namespace", "ls"):
+			return core.LocalCommandResult{Stdout: "default\n"}, nil
+		case findArg(req.Args, "ps"):
+			return core.LocalCommandResult{}, nil
+		}
+		return core.LocalCommandResult{}, nil
+	}}
+	result, err := testBackend(runner).Doctor(t.Context(), core.DoctorRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range result.Checks {
+		if check.Check == "seccomp-profile" && check.Status == "failed" {
+			t.Fatalf("a plain lease reported a seccomp-profile failure: %+v", check)
+		}
 	}
 }
 
@@ -415,6 +482,16 @@ func TestRequestedCapabilityRefusals(t *testing.T) {
 			c.Containerd.GPU = "virtio"
 			c.Containerd.Memory = "2g"
 		}, true},
+		{"krun gpu 4g total leaves less than 4 GiB guest RAM", func(c *core.Config) {
+			c.Containerd.Runtime = "krun"
+			c.Containerd.GPU = "virtio"
+			c.Containerd.Memory = "4g"
+		}, true},
+		{"krun gpu 4352m meets the guest floor", func(c *core.Config) {
+			c.Containerd.Runtime = "krun"
+			c.Containerd.GPU = "virtio"
+			c.Containerd.Memory = "4352m"
+		}, false},
 		{"krun gpu sufficient memory", func(c *core.Config) {
 			c.Containerd.Runtime = "krun"
 			c.Containerd.GPU = "virtio"

@@ -235,8 +235,11 @@ func validateRequestedCapabilities(cfg core.Config) error {
 		if err != nil {
 			return err
 		}
-		if ramMiB < 4096 {
-			return core.Exit(2, "a krun GPU guest with containerd.memory %s OOM-kills Vulkan compute at 1 GiB; raise containerd.memory to at least 4g (the guest RAM is memory minus krunRamHeadroomMiB)", c.Memory)
+		// The guest sees memory minus krunRamHeadroomMiB, so the 4 GiB floor
+		// applies to the GUEST RAM, not to the total the runtime is given.
+		guestMiB := ramMiB - c.KrunRAMHeadroomMiB
+		if guestMiB < 4096 {
+			return core.Exit(2, "a krun GPU guest needs at least 4 GiB of guest RAM but containerd.memory %s leaves %d MiB after krunRamHeadroomMiB=%d; raise containerd.memory to at least %dm (4g plus the headroom)", c.Memory, guestMiB, c.KrunRAMHeadroomMiB, 4096+c.KrunRAMHeadroomMiB)
 		}
 	}
 	return nil
