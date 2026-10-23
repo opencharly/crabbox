@@ -242,6 +242,59 @@ func hasRecordedCall(calls []core.LocalCommandRequest, want ...string) bool {
 	return false
 }
 
+// Cleanup is destructive and must prove which daemon it is acting on; an
+// orphan recorded on another daemon can share a container/volume name.
+func TestCleanupVerifiesTheDaemonBeforeDeleting(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	for _, tc := range []struct {
+		name       string
+		daemon     string
+		wantDelete bool
+	}{
+		{"same daemon", "daemon-id", true},
+		{"other daemon", "other-daemon", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deleted := false
+			runner := &recordingRunner{run: func(req core.LocalCommandRequest) (core.LocalCommandResult, error) {
+				switch {
+				case findArg(req.Args, "info"):
+					output, _ := jsonInfo(daemonInfo{ID: "daemon-id", Namespace: "default"})
+					return core.LocalCommandResult{Stdout: output}, nil
+				case findArg(req.Args, "namespace", "ls"):
+					return core.LocalCommandResult{Stdout: "default\n"}, nil
+				case findArg(req.Args, "ps", "-a"):
+					return core.LocalCommandResult{Stdout: "a\n"}, nil
+				case findArg(req.Args, "inspect"):
+					object := `[{"Id":"a","Name":"/orphan","State":{"Status":"running"},"Config":{"Labels":{"provider":"containerd","lease":"cbx_orphan0001","host":"local","namespace":"default","daemon":"` + tc.daemon + `","state":"ready","state_volume":"cbx-orphan-vol"}}}]`
+					return core.LocalCommandResult{Stdout: object}, nil
+				case findArg(req.Args, "rm", "-f"):
+					deleted = true
+				}
+				return core.LocalCommandResult{}, nil
+			}}
+			if err := testBackend(runner).Cleanup(t.Context(), core.CleanupRequest{}); err != nil {
+				t.Fatal(err)
+			}
+			if deleted != tc.wantDelete {
+				t.Fatalf("deleted=%v want %v", deleted, tc.wantDelete)
+			}
+		})
+	}
+}
+
+// A repository-scoped resolve must not answer from the in-process shortcut: the
+// durable claim carries the owner fence the shortcut skips.
+func TestResolveRememberedLeaseRequiresTheRepoFence(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	b := testBackend(&recordingRunner{})
+	lease := core.LeaseTarget{LeaseID: "cbx_0123456789ab", Server: core.Server{Name: "crabbox-blue-lobster-00000000"}}
+	b.remember(lease)
+	if _, err := b.Resolve(t.Context(), core.ResolveRequest{ID: lease.LeaseID, Repo: core.Repo{Root: t.TempDir()}}); err == nil {
+		t.Fatal("a repository-scoped resolve must go through the durable claim path")
+	}
+}
+
 // Resolve fails closed on an unknown claim without touching the runtime.
 func TestResolveRejectsUnknownClaim(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())

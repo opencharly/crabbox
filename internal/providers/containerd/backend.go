@@ -211,7 +211,10 @@ func (b *backend) Acquire(ctx context.Context, req core.AcquireRequest) (core.Le
 // Resolve rebuilds a lease from its exact local claim and verifies the live
 // daemon identity before any credentialed work.
 func (b *backend) Resolve(ctx context.Context, req core.ResolveRequest) (core.LeaseTarget, error) {
-	if strings.TrimSpace(req.ID) != "" {
+	// The in-process shortcut may only answer a lookup that carries no
+	// repository fence; a repo-scoped resolve must go through the durable claim
+	// path so the owner check applies.
+	if strings.TrimSpace(req.ID) != "" && req.Repo.Root == "" {
 		if lease, ok := b.remembered(req.ID); ok {
 			return lease, nil
 		}
@@ -425,7 +428,6 @@ func (b *backend) Touch(ctx context.Context, req core.TouchRequest) (core.Server
 // removes the exact local claim.
 func (b *backend) ReleaseLease(ctx context.Context, req core.ReleaseLeaseRequest) error {
 	lease := req.Lease
-	b.stopForward(lease.LeaseID)
 	claim, exists, err := core.ReadLeaseClaimWithPresence(lease.LeaseID)
 	if err != nil {
 		return err
@@ -445,6 +447,9 @@ func (b *backend) ReleaseLease(ctx context.Context, req core.ReleaseLeaseRequest
 	if err := b.stopContainer(ctx, lease, name); err != nil {
 		return err
 	}
+	// Keep the tunnel alive through stopContainer: the krun/systemd poweroff path
+	// uses it, and stopping it first would make that path unreachable.
+	b.stopForward(lease.LeaseID)
 	if err := b.removeContainer(ctx, name); err != nil {
 		return err
 	}
@@ -545,6 +550,13 @@ func portmapUnavailable(result core.LocalCommandResult) (string, bool) {
 // Cleanup deletes claims first, then proves and deletes matched orphans.
 func (b *backend) Cleanup(ctx context.Context, req core.CleanupRequest) error {
 	scope := Provider{}.ClaimScope(b.cfg)
+	// Cleanup is destructive; prove which daemon is reached before deleting by
+	// name, exactly as ReleaseLease and Resolve do. A claim or orphan recorded
+	// on another daemon can share a container/volume name.
+	info, err := b.verifyDaemon(ctx)
+	if err != nil {
+		return err
+	}
 	claims, err := core.ListLeaseClaims()
 	if err != nil {
 		return err
@@ -553,6 +565,9 @@ func (b *backend) Cleanup(ctx context.Context, req core.CleanupRequest) error {
 	host, namespace := hostScopeForConfig(b.cfg), b.cfg.Containerd.Namespace
 	for _, claim := range claims {
 		if claim.Provider != providerName {
+			continue
+		}
+		if recordedDaemon := claim.Labels["daemon"]; recordedDaemon != "" && recordedDaemon != info.ID {
 			continue
 		}
 		if recordedHost := claim.Labels["host"]; recordedHost != "" && recordedHost != host {
@@ -599,6 +614,9 @@ func (b *backend) Cleanup(ctx context.Context, req core.CleanupRequest) error {
 	for _, view := range views {
 		leaseID := view.Labels["lease"]
 		if leaseID == "" || claimed[leaseID] {
+			continue
+		}
+		if recordedDaemon := view.Labels["daemon"]; recordedDaemon != "" && recordedDaemon != info.ID {
 			continue
 		}
 		// A labeled container with a lease ID but no local claim is an orphan of
@@ -817,6 +835,13 @@ func (b *backend) Doctor(ctx context.Context, req core.DoctorRequest) (core.Doct
 			add("ok", "kvm", "/dev/kvm present=true")
 		} else {
 			add("failed", "kvm", "/dev/kvm is missing; a krun guest or nested container cannot start")
+		}
+	}
+	if b.cfg.Containerd.GPU == "drm" {
+		if b.hostPathExists(ctx, "/dev/dri") {
+			add("ok", "dri", "/dev/dri present=true")
+		} else {
+			add("failed", "dri", "/dev/dri is missing; gpu: drm needs the DRI render nodes")
 		}
 	}
 	if b.cfg.Containerd.GPU == "nvidia" {
@@ -1087,7 +1112,10 @@ func (b *backend) refuseUnsupportedImageProfile(ctx context.Context) error {
 		return nil
 	}
 	network, err := b.imageLabel(ctx, "crabbox.krun.network")
-	if err != nil || network != "passt" {
+	if err != nil {
+		return err
+	}
+	if network != "passt" {
 		return nil
 	}
 	return core.Exit(2, "the lease image declares crabbox.krun.network=passt, but containerd.krunNetwork=tsi collapses the pod network namespace and breaks CRIU's loopback probe; set containerd.krunNetwork: passt")

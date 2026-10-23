@@ -235,6 +235,21 @@ func (b *backend) buildRunArgs(ctx context.Context, leaseID, slug, name, inputsD
 		args = append(args, "-v", cacheVolumeName(volume)+":"+volume.Path)
 		args = append(args, "-e", fmt.Sprintf("CRABBOX_CACHE_VOLUME_PATH_%d=%s", index, volume.Path))
 	}
+	for index, spec := range c.Volumes {
+		spec = strings.TrimSpace(spec)
+		if spec == "" {
+			continue
+		}
+		// The shared bootstrap validates each mount target against the paths it
+		// manages; the destination is what it must check, matching the
+		// local-container provider's contract.
+		destination, err := volumeDestination(spec)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, "-v", spec)
+		args = append(args, "-e", fmt.Sprintf("CRABBOX_HOST_VOLUME_PATH_%d=%s", index, destination))
+	}
 
 	krun := c.Runtime == "krun"
 	if c.InitMode == "direct" {
@@ -413,6 +428,16 @@ func (b *backend) hostScope() string {
 	return "local"
 }
 
+// volumeDestination returns the container-side target of a
+// source:destination[:options] mount specification.
+func volumeDestination(spec string) (string, error) {
+	parts := strings.Split(spec, ":")
+	if len(parts) < 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return "", core.Exit(2, "containerd-volume %q must be source:destination[:options]", spec)
+	}
+	return parts[1], nil
+}
+
 func cacheVolumeName(volume core.CacheVolumeConfig) string {
 	raw := strings.TrimSpace(volume.Key)
 	if raw == "" {
@@ -465,6 +490,12 @@ func (b *backend) hostPathExists(ctx context.Context, path string) bool {
 func (b *backend) imageLabel(ctx context.Context, key string) (string, error) {
 	result, err := b.runner().nerdctlOutput(ctx, "image", "inspect", "--format", "{{json .}}", b.cfg.Containerd.Image)
 	if err != nil {
+		// An image that is not local yet is pulled by `nerdctl run`, so a plain
+		// not-found is tolerated; any other inspect failure is reported.
+		text := strings.ToLower(result.Stderr + " " + result.Stdout + " " + err.Error())
+		if strings.Contains(text, "not found") || strings.Contains(text, "no such image") || strings.Contains(text, "no such object") {
+			return "", nil
+		}
 		return "", shared.LocalCommandError("nerdctl image inspect", result, err)
 	}
 	// nerdctl reports image config labels under Config.Labels, not at the top
@@ -475,7 +506,7 @@ func (b *backend) imageLabel(ctx context.Context, key string) (string, error) {
 		} `json:"Config"`
 	}
 	if err := json.Unmarshal([]byte(result.Stdout), &inspected); err != nil {
-		return "", nil
+		return "", core.Exit(5, "nerdctl image inspect returned unreadable JSON for %s: %v", b.cfg.Containerd.Image, err)
 	}
 	return inspected.Config.Labels[key], nil
 }

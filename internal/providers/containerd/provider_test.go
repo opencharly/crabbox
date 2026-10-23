@@ -185,6 +185,18 @@ func TestBuildRunArgs(t *testing.T) {
 			forbidden: [][]string{{"--device", "/dev/dri"}},
 		},
 		{
+			name: "host volumes",
+			mutate: func(c *core.Config) {
+				c.Containerd.Volumes = []string{"/host/data:/data", "cachevol:/cache:ro"}
+			},
+			want: [][]string{
+				{"-v", "/host/data:/data"},
+				{"-e", "CRABBOX_HOST_VOLUME_PATH_0=/data"},
+				{"-v", "cachevol:/cache:ro"},
+				{"-e", "CRABBOX_HOST_VOLUME_PATH_1=/cache"},
+			},
+		},
+		{
 			name:   "nested privileged",
 			mutate: func(c *core.Config) { c.Containerd.Nested = "on" },
 			want: [][]string{
@@ -256,6 +268,34 @@ func TestBuildRunArgs(t *testing.T) {
 				t.Fatalf("daemon identity label is required: %v", args)
 			}
 		})
+	}
+}
+
+func TestBuildRunArgsRejectsAMalformedVolume(t *testing.T) {
+	b := testBackend(&recordingRunner{})
+	b.cfg.Containerd.Volumes = []string{"no-destination"}
+	_, err := b.buildRunArgs(t.Context(), "cbx_lease", "blue-lobster", "name", "/tmp/inputs", "", "49152", nil, false, daemonInfo{ID: "daemon-id"})
+	if err == nil || !strings.Contains(err.Error(), "source:destination") {
+		t.Fatalf("err=%v, want a named malformed-volume refusal", err)
+	}
+}
+
+func TestImageLabelReportsUnreadableInspectOutput(t *testing.T) {
+	runner := &recordingRunner{run: func(core.LocalCommandRequest) (core.LocalCommandResult, error) {
+		return core.LocalCommandResult{Stdout: "not-json"}, nil
+	}}
+	if _, err := testBackend(runner).imageLabel(t.Context(), "crabbox.krun.network"); err == nil {
+		t.Fatal("malformed image inspect JSON must be reported, not silently tolerated")
+	}
+}
+
+func TestImageLabelToleratesAnImageThatIsNotLocalYet(t *testing.T) {
+	runner := &recordingRunner{run: func(core.LocalCommandRequest) (core.LocalCommandResult, error) {
+		return core.LocalCommandResult{Stderr: "FATA[0000] no such image: example:missing"}, errors.New("exit status 1")
+	}}
+	label, err := testBackend(runner).imageLabel(t.Context(), "crabbox.krun.network")
+	if err != nil || label != "" {
+		t.Fatalf("label=%q err=%v, want the not-local-yet image tolerated", label, err)
 	}
 }
 
