@@ -40,11 +40,13 @@ permissions:
 jobs:
   review:
     # A fork PR and a Dependabot PR both arrive without secrets and with a read-only token, so
-    # neither can pull the org-internal image or post the comment. The actor check is what
-    # excludes Dependabot: its head repo IS this repository, so the repo test alone misses it.
+    # neither can pull the org-internal image or post the comment. The repo test catches forks;
+    # for Dependabot it must be `pull_request.user.login`, NOT `github.actor`: `actor` is who
+    # TRIGGERED the event, so a maintainer REOPENING a Dependabot PR changes the actor and would
+    # slip past an actor test — while `user.login` stays `dependabot[bot]`.
     if: >-
       ${{ github.event.pull_request.head.repo.full_name == github.repository &&
-          github.actor != 'dependabot[bot]' }}
+          github.event.pull_request.user.login != 'dependabot[bot]' }}
     uses: opencharly/.github/.github/workflows/clawsweeper-review.yml@a1f021d1b050148bf34f6412ff9ce9c1bf74317b
     with:
       pr-number: ${{ github.event.pull_request.number }}
