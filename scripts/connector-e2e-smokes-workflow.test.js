@@ -112,6 +112,8 @@ test("the containerd row pins its tools, gates xt_multiport loudly, and rejects 
   assert.match(row, /CRABBOX_LIVE_PROVIDERS=containerd/);
   assert.match(row, /CRABBOX_LIVE_CONTAINERD_STRICT=1/);
   assert.match(row, /CRABBOX_LIVE_CONTAINERD_IMAGES=0/);
+  assert.match(row, /CRABBOX_LIVE_REPO="\$smoke_repo"/);
+  assert.match(row, /git -C "\$PWD" archive HEAD \| tar -x -C "\$smoke_repo"/);
   assert.match(row, /sudo env/);
 
   const install = workflow

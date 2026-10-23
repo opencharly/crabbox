@@ -78,11 +78,21 @@ jobs:
             timeout-minutes: 30
             smoke: |
               set -o pipefail
+              smoke_repo="$RUNNER_TEMP/crabbox-smoke-repo"
+              mkdir -p "$smoke_repo"
+              # The CI checkout is GitHub's synthetic `refs/pull/N/merge`
+              # commit, which the containerd sync's remote git seed cannot
+              # reproduce (the seed aborts at checkout, exit 128). Sync the
+              # TREE without .git for this row: it still exercises the SSH
+              # lease lifecycle end to end (acquire -> sync -> run -> release),
+              # and the git seed itself is covered by the local-container row.
+              git -C "$PWD" archive HEAD | tar -x -C "$smoke_repo"
               sudo env \
                 CRABBOX_LIVE=1 \
                 CRABBOX_LIVE_PROVIDERS=containerd \
                 CRABBOX_LIVE_CONTAINERD_STRICT=1 \
                 CRABBOX_LIVE_CONTAINERD_IMAGES=0 \
+                CRABBOX_LIVE_REPO="$smoke_repo" \
                 CRABBOX_BIN="$PWD/bin/crabbox" \
                 "$PWD/scripts/live-smoke.sh" 2>&1 | tee "$RUNNER_TEMP/containerd-smoke.log"
 
