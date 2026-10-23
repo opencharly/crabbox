@@ -65,6 +65,9 @@ func (b *backend) Acquire(ctx context.Context, req core.AcquireRequest) (core.Le
 	if err != nil {
 		return core.LeaseTarget{}, err
 	}
+	if err := validateCheckpointForkScope(ctx, b.runner(), cfg, info); err != nil {
+		return core.LeaseTarget{}, err
+	}
 	if err := b.refuseUnsupportedImageProfile(ctx); err != nil {
 		return core.LeaseTarget{}, err
 	}
@@ -133,6 +136,11 @@ func (b *backend) Acquire(ctx context.Context, req core.AcquireRequest) (core.Le
 		if stateVolume != "" {
 			_ = b.removeVolume(context.WithoutCancel(ctx), stateVolume)
 		}
+	}
+	// A checkpoint fork starts from the captured state volume, not an empty one.
+	if err := b.cloneCheckpointState(ctx, cfg, stateVolume); err != nil {
+		rollback()
+		return core.LeaseTarget{}, err
 	}
 	result, err := b.runner().run(ctx, args, nil, b.rt.Stderr)
 	containerID := strings.TrimSpace(result.Stdout)
@@ -521,11 +529,7 @@ func (b *backend) containerListed(ctx context.Context, name string) (bool, error
 }
 
 func (b *backend) removeVolume(ctx context.Context, volume string) error {
-	result, err := b.runner().nerdctlOutput(ctx, "volume", "rm", "--force", volume)
-	if err != nil && !strings.Contains(strings.ToLower(result.Stderr+err.Error()), "no such volume") {
-		return shared.LocalCommandError("nerdctl volume rm", result, err)
-	}
-	return nil
+	return checkpointRemoveVolume(ctx, b.runner(), volume)
 }
 
 func containerNotFound(result core.LocalCommandResult) bool {
@@ -1073,6 +1077,13 @@ func (b *backend) runOverLeaseSSH(ctx context.Context, lease core.LeaseTarget, s
 // runOverTarget executes one command over the lease SSH target. It is the only
 // path for guest commands; nerdctl exec is never used (krun has no exec).
 func (b *backend) runOverTarget(ctx context.Context, target core.SSHTarget, script string, stdin *strings.Reader) (core.LocalCommandResult, error) {
+	return runOverSSHTarget(ctx, b.rt, target, script, stdin)
+}
+
+// runOverSSHTarget is the provider-operation entry point to the same contract:
+// checkpoint capture runs on Provider rather than an Acquire-configured
+// Backend, so it supplies the standard runtime explicitly.
+func runOverSSHTarget(ctx context.Context, rt core.Runtime, target core.SSHTarget, script string, stdin *strings.Reader) (core.LocalCommandResult, error) {
 	args := []string{
 		"-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=accept-new",
@@ -1089,7 +1100,7 @@ func (b *backend) runOverTarget(ctx context.Context, target core.SSHTarget, scri
 	if stdin != nil {
 		req.Stdin = stdin
 	}
-	return b.rt.Exec.Run(ctx, req)
+	return rt.Exec.Run(ctx, req)
 }
 
 // verifySeccompProfile proves the narrow profile exists before a browser or

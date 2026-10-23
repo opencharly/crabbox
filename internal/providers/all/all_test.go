@@ -1692,3 +1692,31 @@ func TestManualBatchCProviderFlagInputLedger(t *testing.T) {
 		})
 	}
 }
+
+// The registered containerd provider must expose the whole native checkpoint
+// lifecycle, not only a declared feature: a feature without its interfaces is
+// a false capability claim.
+func TestContainerdRegistersTheNativeCheckpointLifecycle(t *testing.T) {
+	provider, err := core.ProviderFor("containerd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := provider.Spec()
+	for _, feature := range []core.Feature{core.FeatureCheckpoint, core.FeatureFork, core.FeatureRestore} {
+		if !spec.Features.Has(feature) {
+			t.Fatalf("containerd must declare %s with its lifecycle", feature)
+		}
+	}
+	if _, ok := provider.(core.NativeCheckpointProvider); !ok {
+		t.Fatal("containerd must implement NativeCheckpointProvider")
+	}
+	if _, ok := provider.(core.NativeCheckpointLifecycleProvider); !ok {
+		t.Fatal("containerd must implement NativeCheckpointLifecycleProvider")
+	}
+	if _, ok := provider.(core.NativeCheckpointForkProvider); !ok {
+		t.Fatal("containerd must implement NativeCheckpointForkProvider")
+	}
+	if _, ok := provider.(core.NativeCheckpointRestoreProvider); !ok {
+		t.Fatal("containerd must implement NativeCheckpointRestoreProvider")
+	}
+}

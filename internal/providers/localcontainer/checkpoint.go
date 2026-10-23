@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	core "github.com/openclaw/crabbox/internal/cli"
+	"github.com/openclaw/crabbox/internal/providers/shared/containercheckpoint"
 )
 
 const (
@@ -158,26 +159,26 @@ func createNativeCheckpoint(ctx context.Context, req core.NativeCheckpointCreate
 		scope,
 		"commit",
 		"--change", checkpointResetLeaseLabelsChange(),
-		"--change", checkpointBootableCommandChange(),
+		"--change", containercheckpoint.BootableCommandChange(),
 		containerID,
 	)
 	commitCmd.Stderr = &commitStderr
 	out, err := commitCmd.Output()
 	if err != nil {
-		return core.NativeCheckpointCreateResult{}, core.Exit(7, "docker commit %s: %v: %s", containerID, err, trimCheckpointFailure(commitStderr.String()))
+		return core.NativeCheckpointCreateResult{}, core.Exit(7, "docker commit %s: %v: %s", containerID, err, containercheckpoint.TrimFailure(commitStderr.String()))
 	}
-	imageID, err := parseCheckpointImageID(string(out))
+	imageID, err := containercheckpoint.ParseImageID(string(out))
 	if err != nil {
 		return core.NativeCheckpointCreateResult{}, core.Exit(7, "docker commit %s: %v", containerID, err)
 	}
-	imageName := checkpointImageName(defaultCheckpointName(req), imageID)
+	imageName := containercheckpoint.ImageName(defaultCheckpointName(req), imageID)
 	if tagOut, err := checkpointCommand(ctx, scope, "tag", imageID, imageName).CombinedOutput(); err != nil {
 		cleanupCtx, cancel := checkpointRollbackContext()
 		cleanupOut, cleanupErr := checkpointCommand(cleanupCtx, scope, "rmi", imageID).CombinedOutput()
 		cancel()
-		detail := trimCheckpointFailure(string(tagOut))
+		detail := containercheckpoint.TrimFailure(string(tagOut))
 		if cleanupErr != nil {
-			detail += fmt.Sprintf("; cleanup failed: %v: %s", cleanupErr, trimCheckpointFailure(string(cleanupOut)))
+			detail += fmt.Sprintf("; cleanup failed: %v: %s", cleanupErr, containercheckpoint.TrimFailure(string(cleanupOut)))
 			return core.NativeCheckpointCreateResult{
 				Image: core.NativeCheckpointImage{
 					ID:       imageID,
@@ -280,32 +281,32 @@ func (Provider) DeleteNativeCheckpoint(ctx context.Context, req core.NativeCheck
 	if !strings.EqualFold(currentID, req.Image.ID) {
 		return core.Exit(7, "refusing to delete checkpoint tag %s: recorded image %s but tag now points to %s; restore the tag or use --local-only", req.Image.Name, req.Image.ID, currentID)
 	}
-	target := firstCheckpointValue(req.Image.Name, req.Image.ID)
+	target := containercheckpoint.FirstValue(req.Image.Name, req.Image.ID)
 	args := []string{"rmi"}
 	if req.Image.Name != "" {
 		args = append(args, "-f")
 	}
 	args = append(args, target)
 	if out, err := checkpointCommand(ctx, scope, args...).CombinedOutput(); err != nil {
-		return core.Exit(7, "docker rmi %s: %v: %s", target, err, trimCheckpointFailure(string(out)))
+		return core.Exit(7, "docker rmi %s: %v: %s", target, err, containercheckpoint.TrimFailure(string(out)))
 	}
 	return nil
 }
 
 func inspectCheckpointTag(ctx context.Context, scope checkpointScope, image core.NativeCheckpointImage) (string, bool, error) {
-	target := firstCheckpointValue(image.Name, image.ID)
+	target := containercheckpoint.FirstValue(image.Name, image.ID)
 	var stderr strings.Builder
 	cmd := checkpointCommand(ctx, scope, "image", "inspect", target, "--format", "{{.Id}}")
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		detail := trimCheckpointFailure(stderr.String())
-		if checkpointInspectReportsMissing(detail) {
+		detail := containercheckpoint.TrimFailure(stderr.String())
+		if containercheckpoint.InspectReportsMissing(detail) {
 			return "", true, nil
 		}
 		return "", false, core.Exit(7, "docker image inspect %s: %v: %s", target, err, detail)
 	}
-	imageID, err := parseCheckpointImageID(string(out))
+	imageID, err := containercheckpoint.ParseImageID(string(out))
 	if err != nil {
 		return "", false, core.Exit(7, "docker image inspect %s: %v", target, err)
 	}
@@ -399,7 +400,7 @@ type podmanConnection struct {
 }
 
 func podmanScopeForConfig(ctx context.Context, cfg core.Config) (checkpointScope, error) {
-	runtimeName := firstCheckpointValue(cfg.LocalContainer.Runtime, "podman")
+	runtimeName := containercheckpoint.FirstValue(cfg.LocalContainer.Runtime, "podman")
 	scope := checkpointScope{Runtime: runtimeName}
 	if host := strings.TrimSpace(os.Getenv("CONTAINER_HOST")); host != "" {
 		scope.Host = host
@@ -464,7 +465,7 @@ func checkpointScopeFromRequest(req core.NativeCheckpointResourceRequest) (check
 func checkpointScopeFromMetadata(metadata map[string]string, fallbackRuntime string) checkpointScope {
 	runtimeName := strings.TrimSpace(metadata[checkpointMetadataRuntime])
 	if runtimeName == "" {
-		runtimeName = firstCheckpointValue(fallbackRuntime, "docker")
+		runtimeName = containercheckpoint.FirstValue(fallbackRuntime, "docker")
 	}
 	return checkpointScope{
 		Runtime:  runtimeName,
@@ -482,7 +483,7 @@ func checkpointForkMetadata(metadata map[string]string, image core.NativeCheckpo
 		out[key] = value
 	}
 	out[checkpointMetadataForkID] = strings.TrimSpace(image.ImageID)
-	out[checkpointMetadataForkName] = strings.TrimSpace(firstCheckpointValue(image.Name, image.Resource))
+	out[checkpointMetadataForkName] = strings.TrimSpace(containercheckpoint.FirstValue(image.Name, image.Resource))
 	return out
 }
 
@@ -499,8 +500,8 @@ func checkpointScopeMetadata(scope checkpointScope) map[string]string {
 
 func checkpointMetadataForServer(scope checkpointScope, cfg core.Config, server core.Server) map[string]string {
 	metadata := checkpointScopeMetadata(scope)
-	metadata[checkpointMetadataUser] = firstCheckpointValue(server.Labels["ssh_user"], cfg.LocalContainer.User, cfg.SSHUser)
-	metadata[checkpointMetadataWorkRoot] = firstCheckpointValue(server.Labels["work_root"], cfg.LocalContainer.WorkRoot, cfg.WorkRoot)
+	metadata[checkpointMetadataUser] = containercheckpoint.FirstValue(server.Labels["ssh_user"], cfg.LocalContainer.User, cfg.SSHUser)
+	metadata[checkpointMetadataWorkRoot] = containercheckpoint.FirstValue(server.Labels["work_root"], cfg.LocalContainer.WorkRoot, cfg.WorkRoot)
 	return metadata
 }
 
@@ -622,13 +623,13 @@ func checkpointRequiredOutput(cmd *exec.Cmd, operation, valueName string) (strin
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return "", core.Exit(7, "%s: %v: %s", operation, err, trimCheckpointFailure(stderr.String()))
+		return "", core.Exit(7, "%s: %v: %s", operation, err, containercheckpoint.TrimFailure(stderr.String()))
 	}
 	value := strings.TrimSpace(string(out))
 	if value == "" {
 		detail := ""
 		if strings.TrimSpace(stderr.String()) != "" {
-			detail = ": " + trimCheckpointFailure(stderr.String())
+			detail = ": " + containercheckpoint.TrimFailure(stderr.String())
 		}
 		return "", core.Exit(7, "%s: command returned an empty %s%s", operation, valueName, detail)
 	}
@@ -720,7 +721,7 @@ func checkpointCanonicalWorkdir(ctx context.Context, scope checkpointScope, cont
 	}
 	out, err := checkpointCommand(ctx, scope, "exec", containerID, "sh", "-c", `cd "$1" && pwd -P`, "sh", core.LiteralPOSIXPath(workdir)).CombinedOutput()
 	if err != nil {
-		return "", core.Exit(7, "resolve docker workdir %s: %v: %s", workdir, err, trimCheckpointFailure(string(out)))
+		return "", core.Exit(7, "resolve docker workdir %s: %v: %s", workdir, err, containercheckpoint.TrimFailure(string(out)))
 	}
 	canonical := strings.TrimSpace(string(out))
 	if !strings.HasPrefix(canonical, "/") {
@@ -732,7 +733,7 @@ func checkpointCanonicalWorkdir(ctx context.Context, scope checkpointScope, cont
 func checkpointMounts(ctx context.Context, scope checkpointScope, containerID string) ([]checkpointMount, error) {
 	out, err := checkpointCommand(ctx, scope, "inspect", containerID, "--format", "{{json .Mounts}}").CombinedOutput()
 	if err != nil {
-		return nil, core.Exit(7, "docker inspect %s mounts: %v: %s", containerID, err, trimCheckpointFailure(string(out)))
+		return nil, core.Exit(7, "docker inspect %s mounts: %v: %s", containerID, err, containercheckpoint.TrimFailure(string(out)))
 	}
 	var mounts []checkpointMount
 	if err := json.Unmarshal(out, &mounts); err != nil {
@@ -769,110 +770,6 @@ func checkpointResetLeaseLabelsChange() string {
 	return change.String()
 }
 
-func checkpointBootableCommandChange() string {
-	return `CMD ["/bin/sh","-c","while :; do sleep 3600; done"]`
-}
-
-func checkpointImageName(name, imageID string) string {
-	shortID := strings.TrimPrefix(strings.ToLower(imageID), "sha256:")
-	if len(shortID) > 12 {
-		shortID = shortID[:12]
-	}
-	const prefix = "crabbox-checkpoint-"
-	const maxRepositoryLength = 255
-	maxNameLength := maxRepositoryLength - len(prefix) - 1 - len(shortID)
-	return prefix + normalizeCheckpointRepositoryComponent(name, maxNameLength) + "-" + shortID
-}
-
-func normalizeCheckpointRepositoryComponent(value string, maxLength int) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	var out strings.Builder
-	out.Grow(min(len(value), maxLength))
-	separator := false
-	for _, r := range value {
-		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
-			required := 1
-			if separator && out.Len() > 0 {
-				required++
-			}
-			if out.Len()+required > maxLength {
-				break
-			}
-			if separator && out.Len() > 0 {
-				out.WriteByte('-')
-			}
-			out.WriteRune(r)
-			separator = false
-			continue
-		}
-		separator = true
-	}
-	normalized := strings.Trim(out.String(), "-")
-	if normalized == "" {
-		return "checkpoint"
-	}
-	return normalized
-}
-
-func parseCheckpointImageID(output string) (string, error) {
-	imageID := ""
-	for _, field := range strings.Fields(output) {
-		if !validCheckpointImageID(field) {
-			continue
-		}
-		if imageID != "" && !strings.EqualFold(imageID, field) {
-			return "", fmt.Errorf("ambiguous image ids in output %q", strings.TrimSpace(output))
-		}
-		imageID = strings.ToLower(field)
-	}
-	if imageID == "" {
-		return "", fmt.Errorf("missing sha256 image id in output %q", strings.TrimSpace(output))
-	}
-	return imageID, nil
-}
-
-func validCheckpointImageID(value string) bool {
-	digest := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(value)), "sha256:")
-	if len(digest) != 64 {
-		return false
-	}
-	for _, r := range digest {
-		if r < '0' || r > '9' && r < 'a' || r > 'f' {
-			return false
-		}
-	}
-	return true
-}
-
-func checkpointInspectReportsMissing(output string) bool {
-	value := strings.ToLower(output)
-	return strings.Contains(value, "no such image") ||
-		strings.Contains(value, "no such object") ||
-		strings.Contains(value, "image not found") ||
-		strings.Contains(value, "reference does not exist")
-}
-
 func defaultCheckpointName(req core.NativeCheckpointCreateRequest) string {
-	return firstCheckpointValue(req.Name, req.RepoName, req.LeaseID, "checkpoint")
-}
-
-func firstCheckpointValue(values ...string) string {
-	for _, value := range values {
-		if value = strings.TrimSpace(value); value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func trimCheckpointFailure(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "-"
-	}
-	const max = 500
-	if len(value) > max {
-		return value[:max] + "..."
-	}
-	return value
+	return containercheckpoint.FirstValue(req.Name, req.RepoName, req.LeaseID, "checkpoint")
 }

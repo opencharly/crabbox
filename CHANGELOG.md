@@ -4,7 +4,8 @@
 
 ### Added
 
-- containerd: add the `containerd` SSH-lease provider (alias `nerdctl`) with daemon identity and rootless-mode verification, argv builders for crun/runc/krun, private `/crabbox` inputs, pause/resume, port reads, doctor checks, and the shared `containerbootstrap` script that `local-container` also uses. Native `containerd-commit`/CRIU checkpoints and port publishing are the next seam. [Issue 2](https://github.com/opencharly/crabbox/issues/2).
+- containerd: add the `containerd` SSH-lease provider (alias `nerdctl`) with daemon identity and rootless-mode verification, argv builders for crun/runc/krun, private `/crabbox` inputs, pause/resume, port reads, doctor checks, and the shared `containerbootstrap` script that `local-container` also uses. [Issue 2](https://github.com/opencharly/crabbox/issues/2).
+- containerd: native `containerd-commit` checkpoints — pause/commit of the lease root filesystem plus a state-volume clone, with a saved-and-restored `/etc/machine-id`, a GNU `cp` refusal (busybox drops `trusted.overlay.*`), verify/delete/fork, and an in-place restore that keeps the lease id, claim, SSH key and published ports. Adds the provider-neutral `NativeCheckpointRestoreProvider` beside `NativeCheckpointForkProvider`. The shared bootstrap gains the systemd ending, a real headless browser probe, and `docker-cli` beside `docker.io`. [Issue 3](https://github.com/opencharly/crabbox/issues/3).
 
 ## 0.79.1 - 2026-10-20
 

@@ -483,9 +483,10 @@ container ID leaves both the container and claim untouched.
   Each checkpoint records its Docker context, context-store path, resolved
   daemon endpoint, and Docker system ID; verify and delete fail closed if that
   context or daemon is later replaced.
-  This native path is currently Docker-only; Podman and nerdctl keep using
-  workspace archives. Crabbox rejects native checkpoints when the workspace is
-  stored in a mounted volume because `docker commit` omits mounted data.
+  Podman leases keep using workspace archives; the `containerd` provider has its
+  own `containerd-commit` primitive. Crabbox rejects native checkpoints when the
+  workspace is stored in a mounted volume because `docker commit` omits mounted
+  data.
 - `crabbox checkpoint fork <id>` launches a fresh lease from the committed
   image. Fork validates the checkpoint tag and Docker system ID, replays the
   recorded Docker runtime and daemon scope, disables Docker socket passthrough,
