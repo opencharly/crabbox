@@ -51,7 +51,7 @@ concurrency:
 jobs:
   guard:
     name: guard-protected-release-policy
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -182,7 +182,7 @@ jobs:
   download-draft:
     name: download-opaque-release-input
     needs: guard
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 10
     # The release-capable token exists only in this no-checkout,
     # non-candidate job. Later jobs receive an immutable Actions artifact.

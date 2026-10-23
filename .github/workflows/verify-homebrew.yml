@@ -31,7 +31,7 @@ permissions:
 jobs:
   guard:
     name: guard-protected-release
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 10
     steps:
       - name: Check out protected Homebrew workflow tooling

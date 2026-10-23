@@ -19,7 +19,7 @@ permissions:
 jobs:
   proof:
     name: Render visual proof
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 12
 
     steps:

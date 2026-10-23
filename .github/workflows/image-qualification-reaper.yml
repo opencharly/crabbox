@@ -18,7 +18,7 @@ concurrency:
 jobs:
   reap:
     name: Recover abandoned qualification
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 20
     environment: image-qualification
     steps:

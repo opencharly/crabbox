@@ -201,7 +201,7 @@ jobs:
 
   desktop-resize:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.desktop-resize-only }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 45
     steps:
       - name: Bound provisioning and cleanup time
