@@ -137,9 +137,9 @@ silently downgraded.
 |---|---|---|
 | Actions runner + `initMode: direct` | the runner installs a systemd unit; direct mode runs the bootstrap as PID 1 | `initMode: systemd` |
 | `criu: on` + rootless + crun/runc | init-userns gate for seccomp-filtered tasks, netns switch-back, `map_files` | `runtime: krun` (in-guest) or `criu: in-container` |
-| `--strategy process` + rootless daemon | the same init-userns gate applies to the checkpoint's live task | a rootful crun/runc daemon |
-| `--strategy process` + `runtime: crun` restore | containerd passes `-no-subreaper` to `restore`; crun rejects the flag (exit 64) | `runtime: runc` |
-| `--strategy process` + `criu: in-container` or `runtime: krun` | those paths run CRIU inside the lease/guest and are not the daemon-host primitive this seam implements | `criu: on`/`auto` with `runtime: crun` (capture) or `runc` (capture and restore) |
+| `--strategy process` + rootless daemon | the same init-userns gate applies to the checkpoint's live task | a rootful `runtime: runc` daemon |
+| `--strategy process` + `runtime: crun` | containerd passes `-no-subreaper` to `restore` and crun rejects the flag (exit 64). Create runs the same restore probe, so crun is refused at **capture**, not only at restore | `runtime: runc` |
+| `--strategy process` + `criu: in-container` or `runtime: krun` | those paths run CRIU inside the lease/guest and are not the daemon-host primitive this seam implements | `criu: on`/`auto` with `runtime: runc` |
 | `snapshotter: btrfs` + rootless | a rootless user namespace cannot mount the btrfs device (`btrfs.go:240-248`, NEEDS UPSTREAM) | `snapshotter: native` on a btrfs data root, or `overlayfs` |
 | `runtime: krun` + `gpu: nvidia` | the render-server sandbox dev-binds only `/dev/dri` (`handlers/krun.c:699-703`, NEEDS UPSTREAM) | crun/runc + CDI, or `gpu: virtio` on AMD/Intel |
 | `runtime: krun` + `gpu: drm` | krun takes GPUs through `krun.gpu_flags`, never `--device /dev/dri` | `gpu: virtio`, or crun/runc + `gpu: drm` |
@@ -195,7 +195,7 @@ below.
 
 `crabbox checkpoint create --id <lease> --strategy process` captures the
 running task with containerd's CRIU primitive instead of committing an image.
-It is offered only for a rootful daemon with `runtime: crun` or `runc` and
+It is offered only for a rootful daemon with `runtime: runc` and
 `containerd.criu: on` (or `auto`).
 
 - **Pre-flight** — `criu check --unprivileged --feature seccomp_suspend` runs on
@@ -203,8 +203,9 @@ It is offered only for a rootful daemon with `runtime: crun` or `runc` and
   `seccomp_suspend is supported` on either stream; rc 0 alone is not enough.
 - **Restore capability** — `<runtimePath> restore --help` must mention
   `no-subreaper`. containerd passes `-no-subreaper` when it restores, and crun
-  rejects that flag with exit 64, so a crun checkpoint could be created but
-  never restored. `runc` is the working runtime.
+  rejects that flag with exit 64. The create path runs this probe too, so a
+  crun lease is refused at **capture**, before any checkpoint exists; `runc` is
+  the working runtime for both capture and restore.
 - **Capture** — Crabbox closes the lease's multiplexed SSH sessions (CRIU would
   capture their established sockets), then runs
   `nerdctl checkpoint create --leave-running <container> crabbox-<lease>-<short>`.

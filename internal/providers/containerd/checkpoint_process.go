@@ -115,13 +115,13 @@ func requireProcessCheckpointRuntime(ctx context.Context, runner commandRunner, 
 	case c.CRIU == "off":
 		return core.Exit(2, "containerd.criu=off disables process checkpoints; set containerd.criu: on or auto to enable --strategy process")
 	case c.CRIU == "in-container":
-		return core.Exit(2, "containerd.criu=in-container runs CRIU inside the lease and is not offered by --strategy process; this seam checkpoints with the daemon host's CRIU against a rootful crun/runc task")
+		return core.Exit(2, "containerd.criu=in-container runs CRIU inside the lease and is not offered by --strategy process; this seam checkpoints with the daemon host's CRIU against a rootful runc task")
 	case c.Runtime == "krun":
-		return core.Exit(2, "process checkpoints require containerd.runtime: crun or runc on the daemon host; runtime krun runs the workload in a microVM guest, whose in-guest CRIU dump is not offered by this seam")
+		return core.Exit(2, "process checkpoints require containerd.runtime: runc on the daemon host; runtime krun runs the workload in a microVM guest, whose in-guest CRIU dump is not offered by this seam")
 	case c.Runtime != "crun" && c.Runtime != "runc":
-		return core.Exit(2, "process checkpoints require containerd.runtime: crun or runc, not %q", c.Runtime)
+		return core.Exit(2, "process checkpoints require containerd.runtime: runc, not %q (crun is refused by the restore probe below)", c.Runtime)
 	case c.Rootless:
-		return core.Exit(2, "a rootless containerd daemon cannot process-checkpoint a seccomp-filtered task: the init user namespace is the gate, netns switch-back fails, and map_files is not readable. Use a rootful crun/runc daemon")
+		return core.Exit(2, "a rootless containerd daemon cannot process-checkpoint a seccomp-filtered task: the init user namespace is the gate, netns switch-back fails, and map_files is not readable. Use a rootful runc daemon")
 	}
 	output, rc, runErr := checkpointCRIUProbe(ctx, runner)
 	if !checkpointCRIUProbeOK(rc, runErr, output) {

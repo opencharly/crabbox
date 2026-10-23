@@ -855,13 +855,13 @@ See [Checkpoints](../features/checkpoints.md#lifecycle-and-expiry).
 | Cloudflare containers | Container filesystem snapshot | not supported |
 
 `--strategy process` is offered only by the `containerd` provider, for a
-rootful daemon with `runtime: crun` or `runc` and `containerd.criu: on` (or
-`auto`). It creates a `containerd-criu` record: a CRIU dump of the running
-task, with the writable layer left untouched. Creation requires the host
-pre-flight `criu check --unprivileged --feature seccomp_suspend` to exit 0 and
-report `seccomp_suspend is supported`, and requires the runtime's `restore
---help` to accept `no-subreaper` (crun rejects it with exit 64, so restore uses
-`runc`). Restore rewinds the process tree into the same container with `start
+rootful daemon with `runtime: runc` and `containerd.criu: on` (or `auto`). It
+creates a `containerd-criu` record: a CRIU dump of the running task, with the
+writable layer left untouched. Creation requires the host pre-flight `criu
+check --unprivileged --feature seccomp_suspend` to exit 0 and report
+`seccomp_suspend is supported`, and requires the runtime's `restore --help` to
+accept `no-subreaper` (crun rejects it with exit 64; create runs the same
+probe, so crun is refused before capture). Restore rewinds the process tree into the same container with `start
 --checkpoint`, does not roll back the writable layer, and refuses a zombie
 `STOPPED` task. Fork is refused: the dump is bound to its task and network
 namespace. See [Checkpoints](../features/checkpoints.md#native-strategies).

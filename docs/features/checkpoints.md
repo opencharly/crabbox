@@ -145,7 +145,7 @@ provider only.
 
 | Provider | Kind |
 | --- | --- |
-| containerd (rootful, `crun`/`runc`) | `containerd-criu` |
+| containerd (rootful, `runc`) | `containerd-criu` |
 
 A process checkpoint is a CRIU dump of the container's task — processes, memory
 and namespaces — taken with `nerdctl checkpoint create --leave-running`, so the
@@ -161,7 +161,7 @@ provider requires all three of:
 - the runtime's `restore --help` to mention `no-subreaper`: containerd passes
   `-no-subreaper` when it restores, and `crun` rejects that flag with exit 64,
   so only `runc` can consume a checkpoint this seam creates.
-- a rootful `crun`/`runc` daemon with `containerd.criu: on` (or `auto`). Rootless
+- a rootful daemon with `runtime: runc` and `containerd.criu: on` (or `auto`). Rootless
   daemons, `criu: in-container`, and the krun in-guest path are refused with the
   mechanism named.
 

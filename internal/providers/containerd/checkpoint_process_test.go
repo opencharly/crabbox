@@ -290,7 +290,7 @@ func TestCreateProcessCheckpointRefusesUnsupportedMechanisms(t *testing.T) {
 		{"criu off", func(c *core.Config) { c.Containerd.CRIU = "off" }, "criu=off"},
 		{"in-container", func(c *core.Config) { c.Containerd.CRIU = "in-container" }, "in-container"},
 		{"krun in-guest", func(c *core.Config) { c.Containerd.Runtime = "krun" }, "krun"},
-		{"unknown runtime", func(c *core.Config) { c.Containerd.Runtime = "youki" }, "crun or runc"},
+		{"unknown runtime", func(c *core.Config) { c.Containerd.Runtime = "youki" }, "runtime: runc"},
 		{"rootless", func(c *core.Config) { c.Containerd.Rootless = true }, "rootless"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
