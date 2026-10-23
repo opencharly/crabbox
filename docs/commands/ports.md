@@ -10,6 +10,9 @@ crabbox ports --provider docker-sandbox --id blue-box --publish 3000
 crabbox ports --provider docker-sandbox --id blue-box --unpublish 41000:3000
 crabbox ports --provider docker-sandbox --id blue-box --json
 crabbox ports --provider codesandbox --id web-box --publish 3000 --json
+crabbox ports --provider containerd --id warm-crab --publish 3000
+crabbox ports --provider containerd --id warm-crab --publish 41000:3000
+crabbox ports --provider containerd --id warm-crab --unpublish 3000
 ```
 
 ## Lease Resolution
@@ -61,6 +64,34 @@ CodeSandbox SDK host URL. With `--json`, CodeSandbox returns objects with
 CodeSandbox because the SDK observes ports owned by running processes rather
 than exposing a close-port operation; stop the process inside the sandbox.
 
+For containerd, the spec is a loopback forward:
+
+```text
+[LOCAL_PORT:]CONTAINER_PORT
+```
+
+- `3000` chooses a free operator-side loopback port for container port `3000`
+  and prints the mapping.
+- `41000:3000` binds operator loopback `41000` to container port `3000`.
+
+`nerdctl` cannot add or remove a published port on a running container, so the
+provider does not ask it to. `--publish` starts a detached owner process that
+runs `ssh -L 127.0.0.1:LOCAL_PORT:127.0.0.1:CONTAINER_PORT` over the lease's SSH
+endpoint and records its pid and an advisory lock under the Crabbox state
+directory. The owner outlives the `ports` command, `--unpublish` stops it, and
+`crabbox stop` reaps any forward the lease still owns. `ports` lists live
+forwards beside the `nerdctl port` mappings.
+
+The port lives **inside the lease**, never on the operator's loopback. On a
+remote containerd host the forward rides the same SSH tunnel the lease already
+uses; nothing probes the remote host's loopback from the operator. Publishing a
+port nothing listens on inside the lease is refused, and the error names the
+lease side and the containerd host it runs on.
+
+Creating the lease with `--expose <port>` is the alternative: `nerdctl`
+publishes that port on the daemon's loopback at container start, and `ports`
+lists it without an owned forward. `--expose` cannot be changed afterwards.
+
 ## Provider Support
 
 This command is provider-opt-in. Providers without a native port-publishing or
@@ -68,6 +99,8 @@ URL bridge fail clearly instead of guessing. Supported providers:
 
 - `docker-sandbox` — native `sbx ports` list, publish, and unpublish.
 - `codesandbox` — SDK open-port listing and host URL publishing.
+- `containerd` — `nerdctl port` listing plus owned SSH local forwards
+  (`--publish`/`--unpublish`) on a Unix operator.
 
 ## See also
 

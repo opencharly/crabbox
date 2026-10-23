@@ -28,26 +28,55 @@ type backend struct {
 	rt   core.Runtime
 
 	mu       sync.Mutex
-	forwards map[string]*sshForward
+	forwards map[forwardKey]*sshForward
 	acquired map[string]core.LeaseTarget
 
 	dialPort dialFunc
 	waitSSH  waitForSSHFunc
+
+	// publish seams are injectable so the forward-owner lifecycle is testable
+	// without forking a real helper.
+	spawnOwner spawnForwardOwnerFunc
+	stopOwner  stopForwardOwnerFunc
+}
+
+// forwardKey names one owned SSH forward. A lease has at most one lease tunnel
+// plus one forward per published container port.
+type forwardKey struct {
+	leaseID       string
+	containerPort int // 0 is the lease's own SSH tunnel
+}
+
+func leaseForwardKey(leaseID string) forwardKey { return forwardKey{leaseID: leaseID} }
+
+func publishedForwardKey(leaseID string, containerPort int) forwardKey {
+	return forwardKey{leaseID: leaseID, containerPort: containerPort}
 }
 
 type sshForward struct {
 	cancel    context.CancelFunc
 	localPort string
+	done      chan struct{}
 }
 
 func newBackend(spec core.ProviderSpec, cfg core.Config, rt core.Runtime) core.Backend {
 	cfg.Provider = providerName
-	return &backend{spec: spec, cfg: cfg, rt: rt, forwards: map[string]*sshForward{}, acquired: map[string]core.LeaseTarget{}}
+	return &backend{spec: spec, cfg: cfg, rt: rt, forwards: map[forwardKey]*sshForward{}, acquired: map[string]core.LeaseTarget{}}
 }
 
 func (b *backend) Spec() core.ProviderSpec { return b.spec }
 
 func (b *backend) runner() commandRunner { return commandRunner{cfg: b.cfg, rt: b.rt} }
+
+// waitForLeaseSSH is the one SSH-readiness probe both Acquire and Resolve use.
+// The injectable seam keeps the remote path testable without a live host.
+func (b *backend) waitForLeaseSSH(ctx context.Context, target *core.SSHTarget) error {
+	waitForSSH := b.waitSSH
+	if waitForSSH == nil {
+		waitForSSH = core.WaitForSSHReady
+	}
+	return waitForSSH(ctx, target, b.rt.Stderr, "containerd ssh", core.BootstrapWaitTimeout(b.cfg))
+}
 
 // Acquire creates one containerd container, publishes its SSH port on the
 // operator's loopback, verifies the daemon and the SSH contract, and publishes
@@ -176,11 +205,7 @@ func (b *backend) Acquire(ctx context.Context, req core.AcquireRequest) (core.Le
 		rollback()
 		return core.LeaseTarget{}, err
 	}
-	waitForSSH := b.waitSSH
-	if waitForSSH == nil {
-		waitForSSH = core.WaitForSSHReady
-	}
-	if err := waitForSSH(ctx, &target, b.rt.Stderr, "containerd ssh", core.BootstrapWaitTimeout(cfg)); err != nil {
+	if err := b.waitForLeaseSSH(ctx, &target); err != nil {
 		rollback()
 		return core.LeaseTarget{}, err
 	}
@@ -257,7 +282,7 @@ func (b *backend) Resolve(ctx context.Context, req core.ResolveRequest) (core.Le
 		}
 	}
 	if req.Prepare {
-		if err := core.WaitForSSHReady(ctx, &lease.SSH, b.rt.Stderr, "containerd ssh", core.BootstrapWaitTimeout(b.cfg)); err != nil {
+		if err := b.waitForLeaseSSH(ctx, &lease.SSH); err != nil {
 			return core.LeaseTarget{}, err
 		}
 	}
@@ -454,6 +479,12 @@ func (b *backend) ReleaseLease(ctx context.Context, req core.ReleaseLeaseRequest
 	}
 	if name == "" {
 		name = core.LeaseProviderName(lease.LeaseID, lease.Server.Labels["slug"])
+	}
+	// Published forwards are operators of their own; stop them before the
+	// container they point at, and prove each one closed (a leftover ssh child
+	// keeps forwarding after the lease is gone).
+	if err := b.reapPublishedForwards(ctx, lease.LeaseID); err != nil {
+		return err
 	}
 	// A process checkpoint is scoped to its container under the nerdctl data
 	// root: removing the container first leaves it unreachable. Delete the
@@ -752,33 +783,6 @@ func (b *backend) UpdateTailscaleMetadata(ctx context.Context, lease core.LeaseT
 	return server, nil
 }
 
-// Ports reads the published mappings. Adding a mapping to a running container
-// is not possible with nerdctl, so publish/unpublish name the working
-// configuration instead of silently doing nothing.
-func (b *backend) Ports(ctx context.Context, req core.PortsRequest) (string, error) {
-	if len(req.Publish) > 0 || len(req.Unpublish) > 0 {
-		return "", core.Exit(2, "nerdctl cannot add or remove a published port on a running container; create the lease with `--expose <port>` (repeatable) and the provider publishes each port on loopback at creation")
-	}
-	lease, err := b.Resolve(ctx, core.ResolveRequest{ID: req.ID})
-	if err != nil {
-		return "", err
-	}
-	result, err := b.runner().nerdctlOutput(ctx, "port", lease.Server.Name)
-	if err != nil {
-		return "", shared.LocalCommandError("nerdctl port", result, err)
-	}
-	lines := []string{}
-	for _, line := range strings.Split(result.Stdout, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			lines = append(lines, line)
-		}
-	}
-	if req.JSON {
-		return mustJSON(lines), nil
-	}
-	return strings.Join(lines, "\n"), nil
-}
-
 // Doctor reports daemon, runtime and host readiness. Every check is read-only.
 func (b *backend) Doctor(ctx context.Context, req core.DoctorRequest) (core.DoctorResult, error) {
 	runner := b.runner()
@@ -980,18 +984,43 @@ func (b *backend) startForward(ctx context.Context, leaseID, remotePort string, 
 	if !b.runner().remote() {
 		return nil
 	}
+	// A resolve may replace an existing tunnel in this process; never leak the
+	// previous child.
 	b.stopForward(leaseID)
 	localPort, err := allocateLoopbackPort()
 	if err != nil {
 		return err
 	}
-	forwardCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	forward := &sshForward{cancel: cancel, localPort: localPort}
-	b.mu.Lock()
-	b.forwards[leaseID] = forward
-	b.mu.Unlock()
 	args := b.runner().remoteForwardArgv(localPort, remotePort)
+	if err := b.startSSHForward(ctx, leaseForwardKey(leaseID), args, localPort, "containerd SSH forward"); err != nil {
+		return err
+	}
+	target.Port = localPort
+	target.Host = "127.0.0.1"
+	return nil
+}
+
+// startPublishedForward owns the operator-side end of one published container
+// port. The destination is the lease's SSH endpoint: local mode reaches the
+// published port directly, remote mode reaches the operator-side end of the
+// lease tunnel, so the container port lives on the far side in both modes and
+// nothing probes the remote host's loopback from here.
+func (b *backend) startPublishedForward(ctx context.Context, leaseID string, target core.SSHTarget, localPort string, containerPort int) error {
+	args := b.runner().leaseForwardArgv(target, localPort, strconv.Itoa(containerPort))
+	return b.startSSHForward(ctx, publishedForwardKey(leaseID, containerPort), args, localPort,
+		fmt.Sprintf("containerd forward for container port %d", containerPort))
+}
+
+// startSSHForward is the one owner of an ssh -L child. Every forward (the lease
+// tunnel and each published port) registers here, so teardown cannot miss one.
+func (b *backend) startSSHForward(ctx context.Context, key forwardKey, args []string, localPort, label string) error {
+	forwardCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	forward := &sshForward{cancel: cancel, localPort: localPort, done: make(chan struct{})}
+	b.mu.Lock()
+	b.forwards[key] = forward
+	b.mu.Unlock()
 	go func() {
+		defer close(forward.done)
 		_, _ = b.rt.Exec.Run(forwardCtx, core.LocalCommandRequest{
 			Name:                    "ssh",
 			Args:                    args,
@@ -999,21 +1028,43 @@ func (b *backend) startForward(ctx context.Context, leaseID, remotePort string, 
 		})
 	}()
 	if err := b.waitForPort(ctx, localPort); err != nil {
-		b.stopForward(leaseID)
-		return core.Exit(5, "containerd SSH forward did not start on 127.0.0.1:%s: %v", localPort, err)
+		b.stopForwardKey(key)
+		return core.Exit(5, "%s did not start on 127.0.0.1:%s: %v", label, localPort, err)
 	}
-	target.Port = localPort
-	target.Host = "127.0.0.1"
 	return nil
 }
 
 func (b *backend) stopForward(leaseID string) {
+	b.stopForwardKey(leaseForwardKey(leaseID))
+}
+
+func (b *backend) stopForwardKey(key forwardKey) {
 	b.mu.Lock()
-	forward := b.forwards[leaseID]
-	delete(b.forwards, leaseID)
+	forward := b.forwards[key]
+	delete(b.forwards, key)
 	b.mu.Unlock()
 	if forward != nil && forward.cancel != nil {
 		forward.cancel()
+	}
+}
+
+// stopForwardKeyAndWait cancels one forward and proves its process group closed.
+func (b *backend) stopForwardKeyAndWait(ctx context.Context, key forwardKey) error {
+	b.mu.Lock()
+	forward := b.forwards[key]
+	delete(b.forwards, key)
+	b.mu.Unlock()
+	if forward == nil {
+		return nil
+	}
+	if forward.cancel != nil {
+		forward.cancel()
+	}
+	select {
+	case <-forward.done:
+		return nil
+	case <-ctx.Done():
+		return context.Cause(ctx)
 	}
 }
 

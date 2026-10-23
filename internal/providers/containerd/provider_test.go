@@ -28,6 +28,14 @@ func (r *recordingRunner) Run(_ context.Context, req core.LocalCommandRequest) (
 	return core.LocalCommandResult{}, nil
 }
 
+// recorded returns a snapshot so a test can assert on the ssh/nerdctl argv
+// without racing the forward goroutines.
+func (r *recordingRunner) recorded() []core.LocalCommandRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]core.LocalCommandRequest(nil), r.calls...)
+}
+
 func testBackend(runner *recordingRunner) *backend {
 	cfg := core.Config{
 		Provider: providerName,
@@ -60,7 +68,7 @@ func testBackend(runner *recordingRunner) *backend {
 		spec:     Provider{}.Spec(),
 		cfg:      cfg,
 		rt:       core.Runtime{Exec: runner, Stderr: &strings.Builder{}},
-		forwards: map[string]*sshForward{},
+		forwards: map[forwardKey]*sshForward{},
 		acquired: map[string]core.LeaseTarget{},
 	}
 }
