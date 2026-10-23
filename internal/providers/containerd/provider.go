@@ -260,9 +260,6 @@ func validateConfigEnums(cfg core.Config) error {
 			return core.Exit(2, "%s=%q is not supported; use one of %s", enum.key, enum.value, strings.Join(enum.values, ", "))
 		}
 	}
-	if err := validateCRIU(c); err != nil {
-		return err
-	}
 	if strings.TrimSpace(c.Namespace) == "" {
 		return core.Exit(2, "containerd.namespace must not be empty; the uniform default is default")
 	}
@@ -274,15 +271,15 @@ func validateConfigEnums(cfg core.Config) error {
 
 func validateRequestedCapabilities(cfg core.Config) error {
 	c := cfg.Containerd
-	if err := validateCRIU(c); err != nil {
-		return err
-	}
 	if err := validatePreparedImages(cfg); err != nil {
 		return err
 	}
 	krun := c.Runtime == "krun"
 	if (cfg.Actions.Workflow != "" || len(cfg.Actions.RunnerLabels) > 0) && c.InitMode == "direct" {
 		return core.Exit(2, "an Actions runner installs a systemd unit inside the lease, but containerd.initMode=direct runs the bootstrap script as PID 1; set containerd.initMode: systemd (the image init owns the unit)")
+	}
+	if c.CRIU == "on" && c.Rootless && !krun {
+		return core.Exit(2, "CRIU in a rootless lease with runtime %s hits containerd's init-userns gate for seccomp-filtered tasks, the netns switch-back, and map_files; use containerd.runtime: krun (in-guest CRIU) or containerd.criu: in-container (the stated cost is an unconfined seccomp profile and added capabilities)", c.Runtime)
 	}
 	if c.Snapshotter == "btrfs" && c.Rootless {
 		return core.Exit(2, "a rootless user namespace cannot mount the btrfs device that snapshotter btrfs requires (containerd btrfs.go:240-248, NEEDS UPSTREAM); use containerd.snapshotter: native on a btrfs data root, or overlayfs")
@@ -312,18 +309,6 @@ func validateRequestedCapabilities(cfg core.Config) error {
 		}
 	}
 	return nil
-}
-
-// validateCRIU fails closed on the modes this build does not implement.
-// Process checkpoints are seam 3 (opencharly/crabbox#23); until that lands,
-// only off and auto (which already narrows to off) are accepted.
-func validateCRIU(c core.ContainerdConfig) error {
-	switch c.CRIU {
-	case "off", "auto":
-		return nil
-	default:
-		return core.Exit(2, "containerd.criu=%q is not available on this build: process checkpoints are tracked in opencharly/crabbox#23; use containerd.criu: off (auto also narrows to off)", c.CRIU)
-	}
 }
 
 func contains(values []string, want string) bool {

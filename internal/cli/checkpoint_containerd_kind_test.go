@@ -25,3 +25,36 @@ func TestContainerdCommitKindWiring(t *testing.T) {
 		t.Fatalf("exported kind=%q differs from the core kind", exported)
 	}
 }
+
+// The process strategy is a first-class native strategy: it selects the
+// containerd-criu kind, survives normalization, and is restored as the
+// strategy of that kind. These are the functions a record travels through.
+func TestContainerdCRIUProcessStrategyWiring(t *testing.T) {
+	if !validCheckpointStrategy(checkpointStrategyProcess) {
+		t.Fatal("process must be a valid --strategy value")
+	}
+	if got := NormalizeCheckpointStrategy("  PROCESS "); got != checkpointStrategyProcess {
+		t.Fatalf("NormalizeCheckpointStrategy(process)=%q", got)
+	}
+	if got := checkpointCreateStrategy("native", checkpointStrategyProcess, checkpointKindContainerdCRIU); got != checkpointStrategyProcess {
+		t.Fatalf("checkpointCreateStrategy(process)=%q", got)
+	}
+	if !isNativeCheckpointKind(checkpointKindContainerdCRIU) {
+		t.Fatal("containerd-criu must be a native checkpoint kind")
+	}
+	if provider := checkpointProviderForKind(checkpointKindContainerdCRIU); provider != "containerd" {
+		t.Fatalf("containerd-criu provider=%q, want containerd", provider)
+	}
+	if kind := checkpointKindForProviderImage(CoordinatorImage{Kind: CheckpointKindContainerdCRIU}); kind != checkpointKindContainerdCRIU {
+		t.Fatalf("kind from image kind=%q", kind)
+	}
+	if strategy := checkpointStrategyForKind(checkpointKindContainerdCRIU); strategy != checkpointStrategyProcess {
+		t.Fatalf("containerd-criu strategy=%q, want process", strategy)
+	}
+	if exported := CheckpointKindContainerdCRIU; exported != checkpointKindContainerdCRIU {
+		t.Fatalf("exported kind=%q differs from the core kind", exported)
+	}
+	if exported := CheckpointStrategyProcess; exported != checkpointStrategyProcess {
+		t.Fatalf("exported strategy=%q differs from the core strategy", exported)
+	}
+}

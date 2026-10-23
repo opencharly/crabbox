@@ -94,7 +94,7 @@ Flags win over the environment, the repository file, then the user file.
 | `nested` | `off` / `on` | `off` |
 | `stateVolume` | `auto` / `off` | `auto` |
 | `gpu` | `off` / `drm` / `nvidia` / `virtio` | `off` |
-| `criu` | `off` / `auto` (`on` and `in-container` land with opencharly/crabbox#23) | `auto` |
+| `criu` | `off` / `on` / `auto` / `in-container` | `auto` |
 | `cpus` / `memory` | int / size | `0` / empty |
 | `seccompProfile` | path | `/etc/containerd/seccomp/crabbox-userns.json` |
 | `krunGpuFlags` | int | `962` (`1410` is GL-only; never `1283`) |
@@ -126,8 +126,9 @@ below need the named image because the capability lives in its layers.
 | gpu `nvidia` | CDI device `nvidia.com/gpu=all` plus the `files.d` mount | any image with the NVIDIA userspace |
 | gpu `virtio` (krun) | `krun.gpu_flags` annotation; never `--device /dev/dri` | `pod-crabbox-gpu` |
 | checkpoints (`containerd-commit`), fork, restore | `nerdctl commit` of the root filesystem plus a state-volume clone; a running source is paused and `/etc/machine-id` is emptied (restored afterwards); GNU `cp` required | any image with GNU coreutils; `pod-crabbox-k3s` for the k3s snapshot/restore use case |
+| process checkpoints (`containerd-criu`, `--strategy process`) | CRIU dump of the live task with `nerdctl checkpoint create --leave-running`; requires `criu`, a rootful daemon, and `runtime: runc` for restore | any image; `pod-crabbox-criu` for a prepared CRIU host |
 
-## Refusals — each names the mechanism and a working configuration
+## Refusals — measured limits only
 
 Each refusal names the mechanism and a configuration that works. Nothing is
 silently downgraded.
@@ -135,6 +136,10 @@ silently downgraded.
 | Request | Mechanism | Working configuration |
 |---|---|---|
 | Actions runner + `initMode: direct` | the runner installs a systemd unit; direct mode runs the bootstrap as PID 1 | `initMode: systemd` |
+| `criu: on` + rootless + crun/runc | init-userns gate for seccomp-filtered tasks, netns switch-back, `map_files` | `runtime: krun` (in-guest) or `criu: in-container` |
+| `--strategy process` + rootless daemon | the same init-userns gate applies to the checkpoint's live task | a rootful `runtime: runc` daemon |
+| `--strategy process` + `runtime: crun` | containerd passes `-no-subreaper` to `restore` and crun rejects the flag (exit 64). Create runs the same restore probe, so crun is refused at **capture**, not only at restore | `runtime: runc` |
+| `--strategy process` + `criu: in-container` or `runtime: krun` | those paths run CRIU inside the lease/guest and are not the daemon-host primitive this seam implements | `criu: on`/`auto` with `runtime: runc` |
 | `snapshotter: btrfs` + rootless | a rootless user namespace cannot mount the btrfs device (`btrfs.go:240-248`, NEEDS UPSTREAM) | `snapshotter: native` on a btrfs data root, or `overlayfs` |
 | `runtime: krun` + `gpu: nvidia` | the render-server sandbox dev-binds only `/dev/dri` (`handlers/krun.c:699-703`, NEEDS UPSTREAM) | crun/runc + CDI, or `gpu: virtio` on AMD/Intel |
 | `runtime: krun` + `gpu: drm` | krun takes GPUs through `krun.gpu_flags`, never `--device /dev/dri` | `gpu: virtio`, or crun/runc + `gpu: drm` |
@@ -145,9 +150,12 @@ silently downgraded.
 | image label `crabbox.krun.network=passt` + `krunNetwork: tsi` | TSI collapses the pod netns and breaks CRIU's loopback probe | `krunNetwork: passt` |
 
 At acquisition the provider also refuses a namespace missing on the reached
-daemon. `criu: auto` narrows to `off` in the lease output and in `crabbox doctor`;
-`criu: on` and `criu: in-container` fail closed until the process-checkpoint seam
-(opencharly/crabbox#23) lands.
+daemon, and reports `criu: auto` narrowing to `off` in the lease output and in
+`crabbox doctor`. The automatic CRIU pre-flight runs when a process checkpoint
+is requested: `criu check --unprivileged --feature seccomp_suspend` on the
+containerd host must exit 0 and print `seccomp_suspend is supported` on either
+stream. The bulk `--extra` form is deliberately not used because it returns
+non-zero on hosts that checkpoint fine.
 
 ## Checkpoints
 
@@ -180,8 +188,44 @@ provider. The native primitive is the `containerd-commit` kind, opt in with
   reports convergence after the readiness hook. A missing state-volume clone is
   refused before the live lease is touched.
 
-`containerd-criu` (process checkpoints via `--strategy process`) is a later
-seam and is not offered yet.
+Process checkpoints (`--strategy process`, kind `containerd-criu`) are a
+separate primitive, not an image: see [Process checkpoints](#process-checkpoints-containerd-criu)
+below.
+
+### Process checkpoints (`containerd-criu`)
+
+`crabbox checkpoint create --id <lease> --strategy process` captures the
+running task with containerd's CRIU primitive instead of committing an image.
+It is offered only for a rootful daemon with `runtime: runc` and
+`containerd.criu: on` (or `auto`).
+
+- **Pre-flight** — `criu check --unprivileged --feature seccomp_suspend` runs on
+  the containerd host (the daemon's namespace). It must exit 0 **and** print
+  `seccomp_suspend is supported` on either stream; rc 0 alone is not enough.
+- **Restore capability** — `<runtimePath> restore --help` must mention
+  `no-subreaper`. containerd passes `-no-subreaper` when it restores, and crun
+  rejects that flag with exit 64. The create path runs this probe too, so a
+  crun lease is refused at **capture**, before any checkpoint exists; `runc` is
+  the working runtime for both capture and restore.
+- **Capture** — Crabbox closes the lease's multiplexed SSH sessions (CRIU would
+  capture their established sockets), then runs
+  `nerdctl checkpoint create --leave-running <container> crabbox-<lease>-<short>`.
+  The source is never paused, stopped, committed or removed.
+- **Restore** — `crabbox checkpoint restore <id> --id <lease>` is bound to the
+  recorded lease and container. It stops a running container (the writable layer
+  is preserved, never recreated or rolled back), closes the SSH sessions, and
+  runs `nerdctl start --checkpoint <name> <container>`, then waits for SSH and
+  the readiness hook. A zombie `STOPPED` task is refused and reported.
+- **Verify/delete** — the recorded host, daemon id, namespace, runtime,
+  snapshotter and rootless mode are re-proved, and a delete only accepts a
+  checkpoint name derived from the recorded lease. A missing container is
+  reported rather than silently orphaning the checkpoint.
+- **Fork** — refused with the mechanism: a CRIU dump is bound to its task and
+  network namespace and restores only into the same container. Use
+  `--strategy image` for a forkable checkpoint.
+- **Release** — a lease's own process checkpoints are removed before the
+  container is stopped/removed, so no checkpoint is left unreachable under the
+  nerdctl data root.
 
 A native checkpoint, once it exists, is bound to its lease claim: the same
 containerd daemon ID, namespace and host, and the owning repository. Another

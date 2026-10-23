@@ -532,10 +532,15 @@ func TestRequestedCapabilityRefusals(t *testing.T) {
 			c.Actions.RunnerLabels = []string{"self-hosted"}
 			c.Containerd.InitMode = "systemd"
 		}, false},
-		{"criu on fails closed", func(c *core.Config) { c.Containerd.CRIU = "on" }, true},
-		{"criu in-container fails closed", func(c *core.Config) { c.Containerd.CRIU = "in-container" }, true},
-		{"criu off accepted", func(c *core.Config) { c.Containerd.CRIU = "off" }, false},
-		{"criu auto accepted", func(c *core.Config) { c.Containerd.CRIU = "auto" }, false},
+		{"criu on rootless crun", func(c *core.Config) {
+			c.Containerd.CRIU = "on"
+			c.Containerd.Rootless = true
+		}, true},
+		{"criu on rootless krun accepted", func(c *core.Config) {
+			c.Containerd.CRIU = "on"
+			c.Containerd.Rootless = true
+			c.Containerd.Runtime = "krun"
+		}, false},
 		{"btrfs rootless", func(c *core.Config) {
 			c.Containerd.Snapshotter = "btrfs"
 			c.Containerd.Rootless = true
@@ -625,10 +630,6 @@ func TestValidateConfigEnums(t *testing.T) {
 		{"bad snapshotter", func(c *core.Config) { c.Containerd.Snapshotter = "zfs" }, true},
 		{"bad gpu", func(c *core.Config) { c.Containerd.GPU = "cuda" }, true},
 		{"bad criu value", func(c *core.Config) { c.Containerd.CRIU = "bogus" }, true},
-		{"criu on fails closed", func(c *core.Config) { c.Containerd.CRIU = "on" }, true},
-		{"criu in-container fails closed", func(c *core.Config) { c.Containerd.CRIU = "in-container" }, true},
-		{"criu off accepted", func(c *core.Config) { c.Containerd.CRIU = "off" }, false},
-		{"criu auto accepted", func(c *core.Config) { c.Containerd.CRIU = "auto" }, false},
 		{"empty namespace", func(c *core.Config) { c.Containerd.Namespace = "" }, true},
 		{"empty image", func(c *core.Config) { c.Containerd.Image = "" }, true},
 	} {

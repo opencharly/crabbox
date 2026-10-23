@@ -84,7 +84,7 @@ func (b *backend) Acquire(ctx context.Context, req core.AcquireRequest) (core.Le
 		return core.LeaseTarget{}, err
 	}
 	if cfg.Containerd.CRIU == "auto" {
-		fmt.Fprintf(b.rt.Stderr, "criu=auto narrowed to off for this lease: process checkpoints are not implemented yet (opencharly/crabbox#23); set containerd.criu: off to silence this\n")
+		fmt.Fprintf(b.rt.Stderr, "criu=auto narrowed to off for this lease: automatic CRIU requires the checkpoint seam's pre-flight probe; set containerd.criu: in-container or run `crabbox doctor --provider containerd` to inspect the host\n")
 	}
 	keyPath, publicKey, err := core.EnsureTestboxKeyForConfig(cfg, leaseID)
 	if err != nil {
@@ -451,6 +451,13 @@ func (b *backend) ReleaseLease(ctx context.Context, req core.ReleaseLeaseRequest
 	}
 	if name == "" {
 		name = core.LeaseProviderName(lease.LeaseID, lease.Server.Labels["slug"])
+	}
+	// A process checkpoint is scoped to its container under the nerdctl data
+	// root: removing the container first leaves it unreachable. Delete the
+	// lease's own checkpoints before the container, and only names derived from
+	// this lease (ownership proof).
+	if err := b.removeOwnedProcessCheckpoints(ctx, lease.LeaseID, name); err != nil {
+		return err
 	}
 	if err := b.stopContainer(ctx, lease, name); err != nil {
 		return err
@@ -861,9 +868,16 @@ func (b *backend) Doctor(ctx context.Context, req core.DoctorRequest) (core.Doct
 	case "off":
 		add("skip", "criu", "containerd.criu=off")
 	case "auto":
-		add("skip", "criu", "containerd.criu=auto narrows to off because process checkpoints are not implemented yet (opencharly/crabbox#23)")
+		add("skip", "criu", "containerd.criu=auto narrows to off because the automatic pre-flight belongs to the checkpoint seam; set in-container or on to opt in")
 	default:
-		add("failed", "criu", "containerd.criu="+b.cfg.Containerd.CRIU+" is not available on this build (opencharly/crabbox#23); set containerd.criu: off")
+		// One probe implementation with the checkpoint seam: rc 0 AND the
+		// supported line, on either stream, and never the bulk --extra form.
+		output, rc, err := checkpointCRIUProbe(ctx, runner)
+		if !checkpointCRIUProbeOK(rc, err, output) {
+			add("failed", "criu", "criu check --unprivileged --feature seccomp_suspend did not exit 0 and report `seccomp_suspend is supported` (rc="+strconv.Itoa(rc)+"); install a CRIU that supports the seccomp feature on the containerd host")
+		} else {
+			add("ok", "criu", "criu check rc=0 and seccomp_suspend is supported")
+		}
 	}
 	if views, err := b.listContainers(ctx); err == nil {
 		add("ok", "inventory", "containerd leases="+strconv.Itoa(len(views)))

@@ -35,7 +35,7 @@ type ContainerdConfig struct {
 	Nested      string `config:"nested" env:"CRABBOX_CONTAINERD_NESTED" flag:"containerd-nested" sources:"user,repo,env,flag" help:"nested container support: off or on" default:"off" fileIgnoreEmpty:"true" fileStorage:"value"`
 	StateVolume string `config:"stateVolume" env:"CRABBOX_CONTAINERD_STATE_VOLUME" flag:"containerd-state-volume" sources:"user,repo,env,flag" help:"attach a per-lease named state volume: auto or off" default:"auto" fileIgnoreEmpty:"true" fileStorage:"value"`
 	GPU         string `config:"gpu" env:"CRABBOX_CONTAINERD_GPU" flag:"containerd-gpu" sources:"user,repo,env,flag" help:"GPU mode: off, drm, nvidia, or virtio" default:"off" fileIgnoreEmpty:"true" fileStorage:"value"`
-	CRIU        string `config:"criu" env:"CRABBOX_CONTAINERD_CRIU" flag:"containerd-criu" sources:"user,repo,env,flag" help:"CRIU checkpoint mode: off or auto (auto narrows to off; on/in-container arrive with opencharly/crabbox#23)" default:"auto" fileIgnoreEmpty:"true" fileStorage:"value"`
+	CRIU        string `config:"criu" env:"CRABBOX_CONTAINERD_CRIU" flag:"containerd-criu" sources:"user,repo,env,flag" help:"CRIU checkpoint mode: off, on, auto, or in-container" default:"auto" fileIgnoreEmpty:"true" fileStorage:"value"`
 	CPUs        int    `config:"cpus" env:"CRABBOX_CONTAINERD_CPUS" flag:"containerd-cpus" sources:"user,repo,env,flag" help:"CPU limit for a containerd lease; 0 leaves the runtime default" nonnegative:"true" fileInt:"positive" fileStorage:"value" envInt:"fallback"`
 	Memory      string `config:"memory" env:"CRABBOX_CONTAINERD_MEMORY" flag:"containerd-memory" sources:"user,repo,env,flag" help:"memory limit for a containerd lease, for example 8g" fileIgnoreEmpty:"true" fileStorage:"value"`
 
