@@ -19,9 +19,13 @@ const (
 	gitOriginRuntimeFallbackExitCode = 78
 	gitSeedUnsafeWorkspaceExitCode   = 79
 	gitSeedRawWorkspaceExitCode      = 80
-	gitOverlayFallbackExitCode       = 78
-	gitOverlayFallbackMarker         = "CRABBOX_GIT_OVERLAY_FALLBACK:"
-	gitOverlayMutationMarker         = "CRABBOX_GIT_OVERLAY_WORKSPACE_MUTATED"
+	// A checkout failure is recoverable on the transport-failure path only:
+	// the seed has published nothing yet, so the transport classifier still
+	// decides whether plain manifest sync may take over.
+	gitSeedCheckoutFailureExitCode = 81
+	gitOverlayFallbackExitCode     = 78
+	gitOverlayFallbackMarker       = "CRABBOX_GIT_OVERLAY_FALLBACK:"
+	gitOverlayMutationMarker       = "CRABBOX_GIT_OVERLAY_WORKSPACE_MUTATED"
 	// POSIX ERE keeps Go and remote grep aligned; status digits in URLs are not authentication failures.
 	gitOriginHTTPAuthPattern = `authentication (failed|required)|could not read Username|unable to get password|terminal prompts disabled|access denied|permission denied|HTTP(/[0-9.]+)?[[:space:]]+(401|403)([^[:alnum:]_]|$)|requested URL returned error:[[:space:]]*(401|403)([^[:alnum:]_]|$)`
 )
@@ -799,17 +803,31 @@ func gitSeedRuntimeFallbackResult(plan gitCoherencePlan, output string, err erro
 	if plan.Branch == "" && plan.seedEnabled() && err != nil && exitCode(err) == gitOriginRuntimeFallbackExitCode {
 		return "exact_commit_unavailable", true
 	}
+	// A checkout that failed on a transport error is the same unpublished seed
+	// as a failed clone or fetch; a content or invariant failure stays fatal.
+	if err != nil && exitCode(err) == gitSeedCheckoutFailureExitCode && !gitSeedDiagnosticsTruncated(err) {
+		return gitOriginTransportFailureReason(plan.RemoteURL, output)
+	}
 	return gitOriginRuntimeFallbackResult(plan.RemoteURL, output, err)
 }
 
 func gitOriginRuntimeFallbackResult(remoteURL, output string, err error) (string, bool) {
-	if err == nil || exitCode(err) != gitOriginRuntimeFallbackExitCode {
+	if err == nil || exitCode(err) != gitOriginRuntimeFallbackExitCode || gitSeedDiagnosticsTruncated(err) {
 		return "", false
 	}
+	return gitOriginTransportFailureReason(remoteURL, output)
+}
+
+// A truncated capture cannot be classified: its text is discarded, so it must
+// never authorize a fallback decision.
+func gitSeedDiagnosticsTruncated(err error) bool {
 	var truncated *gitOriginDiagnosticsTruncatedError
-	if errors.As(err, &truncated) {
-		return "", false
-	}
+	return errors.As(err, &truncated)
+}
+
+// gitOriginTransportFailureReason classifies an unpublished origin seed. The
+// caller decides whether the exit status makes the failure recoverable.
+func gitOriginTransportFailureReason(remoteURL, output string) (string, bool) {
 	parsed, parseErr := url.Parse(strings.TrimSpace(remoteURL))
 	isHTTP := parseErr == nil && (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https"))
 	switch {

@@ -343,6 +343,10 @@ exec ` + shellQuote(realRsync) + ` "${args[@]}"
 				if tc.delete && !strings.Contains(stderr.String(), "git origin fallback reason=exact_commit_unavailable") {
 					t.Fatalf("unavailable seed did not fall back safely: stderr=%s", stderr.String())
 				}
+				if tc.delete && (!strings.Contains(stderr.String(), "warning: remote git seed failed: phase=") ||
+					!strings.Contains(stderr.String(), "continuing with file sync")) {
+					t.Fatalf("fallback did not report git's own cause: stderr=%s", stderr.String())
+				}
 			}
 			for name, want := range map[string]string{"payload.txt": payload, "modified.txt": "local dirty bytes\n", "untracked.txt": "new local bytes\n", "tracked.txt": "B\n"} {
 				if got, err := os.ReadFile(filepath.Join(workdir, name)); err != nil || string(got) != want {

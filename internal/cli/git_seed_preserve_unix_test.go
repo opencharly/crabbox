@@ -164,6 +164,9 @@ exec `+shellQuote(realRsync)+` "${args[@]}"
 				if !strings.Contains(stderr.String(), "reason=raw_workspace; using plain manifest sync") {
 					t.Fatalf("missing plain fallback: %s", stderr.String())
 				}
+				if !strings.Contains(stderr.String(), "warning: remote git seed failed: phase=") {
+					t.Fatalf("plain fallback did not report git's own cause: %s", stderr.String())
+				}
 				requireWorkspaceFile(t, filepath.Join(workdir, "modified.txt"), "updated local bytes\n")
 				for _, name := range []string{"deleted.txt", ".git", ".crabbox/sync-fingerprint"} {
 					if _, err := os.Lstat(filepath.Join(workdir, name)); !os.IsNotExist(err) {

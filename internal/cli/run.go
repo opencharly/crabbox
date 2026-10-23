@@ -2651,6 +2651,7 @@ retrySync:
 						freshActionsSeed = fresh
 					}
 					usePlainManifestForOrigin(reason)
+					reportRemoteGitSeedFailure(a.Stderr, out, err, "continuing with file sync")
 				} else if coherence.Branch == "" || exitCode(err) == gitSeedUnsafeWorkspaceExitCode {
 					reportRemoteGitSeedFailure(a.Stderr, out, err, "aborting before file sync")
 					return recordFailure(Exit(6, "remote git seed failed: %v", err))

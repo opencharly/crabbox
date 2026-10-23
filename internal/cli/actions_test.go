@@ -2265,6 +2265,9 @@ exit 0
 				if !strings.Contains(stderr.String(), "git origin fallback reason="+tt.fallbackReason) {
 					t.Fatalf("production caller did not observe runtime fallback: %s", stderr.String())
 				}
+				if tt.fallback == "seed" && !strings.Contains(stderr.String(), "warning: remote git seed failed: phase=") {
+					t.Fatalf("seed fallback did not report git's own cause: %s", stderr.String())
+				}
 				if !strings.Contains(log, "protocol.allow=never") {
 					t.Fatalf("production caller did not promote plain manifest mode:\n%s", log)
 				}

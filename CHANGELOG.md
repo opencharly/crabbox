@@ -12,6 +12,10 @@
 
 - containerd: the provider no longer carries the invented `nerdctl` alias or a display-only `container` family, and `--desktop`/`--browser`/`--code`/`--tailscale` are admitted only on the matching `pod-crabbox-*` prepared image and refused at acquisition on an image that does not carry the capability. Adds a live Blacksmith CI smoke row and `CRABBOX_LIVE_CONTAINERD_STRICT`/`CRABBOX_LIVE_CONTAINERD_IMAGES` switches to the smoke script. [Issue 24](https://github.com/opencharly/crabbox/issues/24).
 
+### Fixed
+
+- Sync: remote Git seed failures now print the failing command's own Git/transport output on bounded, labeled `remote git seed detail (untrusted):` lines, with terminal control characters stripped and URL credentials redacted, and the advisory category covers missing objects, promisor fetch failures, checkout errors, storage, ownership, and HTTP transport errors instead of collapsing them all to `unknown`. A seed whose `git checkout` fails on the transport path now takes the same plain manifest fallback as a failed clone instead of aborting the run; content and invariant failures stay fatal. [Issue 27](https://github.com/opencharly/crabbox/issues/27).
+
 ## 0.79.1 - 2026-10-20
 
 ### Highlights
