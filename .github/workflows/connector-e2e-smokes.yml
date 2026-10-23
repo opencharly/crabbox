@@ -540,7 +540,8 @@ jobs:
             flex bison bc libelf-dev libssl-dev cpio kmod rsync xz-utils zstd \
             python3 python3-pyelftools patchelf \
             libsystemd-dev libprotobuf-c-dev libcap-dev libseccomp-dev \
-            libjson-c-dev libmount-dev go-md2man
+            libjson-c-dev libmount-dev go-md2man \
+            clang libclang-dev
           if ! command -v rustup >/dev/null 2>&1; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
               | sh -s -- -y --profile minimal --no-modify-path
@@ -580,6 +581,14 @@ jobs:
             https://github.com/containers/libkrun "$RUNNER_TEMP/libkrun"
           cd "$RUNNER_TEMP/libkrun"
           export PATH="$HOME/.cargo/bin:$PATH"
+          # libkrun's kvm-bindings dependency runs bindgen, which dlopens
+          # libclang. The libkrun README's Linux requirements list Rust, static
+          # glibc and patchelf but omit this, and the build fails in
+          # clang-sys when libclang is absent.
+          LIBCLANG_PATH="$(dirname "$(find /usr/lib/llvm-* -name 'libclang.so' -print -quit)")"
+          export LIBCLANG_PATH
+          test -e "$LIBCLANG_PATH/libclang.so"
+          echo "LIBCLANG_PATH=$LIBCLANG_PATH"
           RUSTUP_TOOLCHAIN="$RUST_VERSION" make -j"$(nproc)"
           sudo make install
           # libkrun's Makefile installs to $(PREFIX)/lib64 on Linux, and
