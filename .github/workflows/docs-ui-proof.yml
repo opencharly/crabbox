@@ -19,6 +19,9 @@ permissions:
 jobs:
   proof:
     name: Render visual proof
+    # Same-repository PRs only: this job checks out and runs the PR's own scripts on the
+    # persistent fleet. Fork PRs must not execute their code there; the proof is a visible skip.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 12
 

@@ -19,6 +19,9 @@ env:
 jobs:
   extension:
     name: Validate package and execute tasks
+    # Same-repository PRs only: this job checks out and runs the PR's own integration code on
+    # the persistent fleet. Fork PRs must not execute their code there; the job is a visible skip.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 10
 

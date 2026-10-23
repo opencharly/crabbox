@@ -20,10 +20,16 @@ env:
   GOTOOLCHAIN: local
 
 jobs:
+  # UNTRUSTED FORK PRs NEVER REACH THE FLEET. Every job below that runs on a self-hosted
+  # runner is gated on the head repo being THIS repository, the same predicate
+  # pr-validator.yml uses. A `pull_request` from a fork carries the PR's own code, and the
+  # fleet is persistent, so that code must not execute there. `github.event_name !=
+  # 'pull_request'` keeps push and workflow_dispatch runs unaffected. The native Windows and
+  # macOS jobs stay on GitHub-hosted images and are gated separately on ENABLE_NATIVE_OS_CI.
   go-test:
     name: Go test
     needs: [go-test-core, go-test-cli]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 5
     steps:
@@ -38,6 +44,7 @@ jobs:
 
   go-test-cli:
     name: Go CLI shard ${{ matrix.shard }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 20
     strategy:
@@ -70,6 +77,7 @@ jobs:
 
   go-test-core:
     name: Go core
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 30
 
@@ -164,6 +172,7 @@ jobs:
 
   go-modules:
     name: Go modules
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 30
 
@@ -184,6 +193,7 @@ jobs:
 
   go-coverage-cli:
     name: Go CLI coverage shard ${{ matrix.shard }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 30
     strategy:
@@ -216,6 +226,7 @@ jobs:
 
   go-coverage-core:
     name: Go non-CLI coverage
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 30
 
@@ -250,7 +261,7 @@ jobs:
   go-coverage:
     name: Go coverage
     needs: [go-coverage-core, go-coverage-cli]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 30
     steps:
@@ -287,7 +298,7 @@ jobs:
   go:
     name: Go
     needs: [go-test, go-modules, go-coverage]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 30
 
@@ -305,6 +316,7 @@ jobs:
 
   go-install:
     name: Direct Go install
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 20
 
@@ -328,7 +340,7 @@ jobs:
     # A FIFTH Windows job, reached through `needs:` rather than `runs-on`. It is guarded for
     # the same reason as the other four: with its Windows dependencies skipped it has nothing
     # to verify, and its `!cancelled()` would otherwise run it and fail on missing artefacts.
-    if: ${{ !cancelled() && vars.ENABLE_NATIVE_OS_CI == 'true' }}
+    if: ${{ !cancelled() && vars.ENABLE_NATIVE_OS_CI == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 5
     steps:
@@ -544,6 +556,7 @@ jobs:
 
   connector-lifecycles:
     name: Connector Lifecycles
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 15
 
@@ -670,6 +683,7 @@ jobs:
 
   worker:
     name: Worker
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ vars.CI_DOCKER_RUNNER_LABEL || 'opencharly-ubuntu' }}
     timeout-minutes: 30
 
@@ -728,6 +742,7 @@ jobs:
 
   worker-postgres-recovery:
     name: AWS recovery PostgreSQL integration
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ vars.CI_DOCKER_RUNNER_LABEL || 'opencharly-ubuntu' }}
     timeout-minutes: 10
     services:
@@ -765,6 +780,7 @@ jobs:
 
   scripts:
     name: Scripts
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 20
 
@@ -807,6 +823,7 @@ jobs:
 
   docs:
     name: Docs
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 5
 

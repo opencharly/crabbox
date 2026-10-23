@@ -40,10 +40,17 @@ env:
 
 jobs:
   hermetic:
-    # The `apple-vm` matrix entry is Apple Silicon and cannot run on this org's fleet.
-    # Skipped rather than removed, so the gap stays visible and one variable re-enables it;
-    # the Linux matrix entries are unaffected.
-    if: ${{ !inputs.desktop-resize-only && (matrix.runner != 'xcode-27' || vars.ENABLE_NATIVE_OS_CI == 'true') }}
+    # Linux rows only. The Apple Silicon proof is a SEPARATE job below, gated like the native
+    # jobs in ci.yml: a job-level `if` cannot read `matrix` (only github, needs, vars and
+    # inputs are available there), and `strategy.matrix.exclude` cannot remove an entry that
+    # `include` adds, because GitHub processes include after exclude. The separate job makes
+    # the skip structural rather than an expression that could never evaluate.
+    #
+    # Same-repository PRs only: this job checks out and runs the PR's own code on the
+    # persistent fleet, so a fork PR must not reach it. The Linux rows are a visible skip
+    # there; fork PRs still get the required `validate / validate` gate on GitHub-hosted
+    # capacity.
+    if: ${{ !inputs.desktop-resize-only && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout-minutes || 15 }}
@@ -96,19 +103,6 @@ jobs:
             runner: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
             build-cli: true
             smoke: CRABBOX_ARCH=amd64 CRABBOX_BIN="$PWD/bin/crabbox" scripts/live-ssh-localhost-smoke.sh
-
-          # Mirrors the apple-vm job in ci.yml: hermetic native helper and
-          # embedded VM daemon proof on Apple Silicon.
-          - name: apple-vm
-            runner: xcode-27
-            build-cli: false
-            smoke: |
-              test "$(uname -m)" = arm64
-              go vet ./internal/applevmhelper ./cmd/crabbox-apple-vm-helper
-              go test -race ./internal/applevmhelper ./internal/providers/applevm
-              sh scripts/build-vmd.sh
-              go build -trimpath -tags vmdembed -o /tmp/crabbox-apple-vm-helper ./cmd/crabbox-apple-vm-helper
-              /tmp/crabbox-apple-vm-helper vmd-info | grep -q '"embedded":true'
 
     steps:
       - name: Check out
@@ -202,7 +196,37 @@ jobs:
           docker inspect --format '{{json .State}}' "$containers"
           timeout 15s docker logs --tail 100 "$containers"
 
+  apple-vm:
+    # Apple Silicon proof: a hermetic native helper and the embedded VM daemon, mirroring the
+    # apple-vm job in ci.yml. It runs on a GitHub-hosted macOS image, not the x64 fleet, and is
+    # gated on the same variable as every other native job: a visible skip, one variable to
+    # re-enable. Keeping it out of the Linux matrix is what makes the skip structural.
+    if: vars.ENABLE_NATIVE_OS_CI == 'true'
+    name: apple-vm
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.3"
+          go-version-file: go.mod
+          cache: false
+
+      - name: Prove native Apple VM helper and embedded daemon
+        run: |
+          test "$(uname -m)" = arm64
+          go vet ./internal/applevmhelper ./cmd/crabbox-apple-vm-helper
+          go test -race ./internal/applevmhelper ./internal/providers/applevm
+          sh scripts/build-vmd.sh
+          go build -trimpath -tags vmdembed -o /tmp/crabbox-apple-vm-helper ./cmd/crabbox-apple-vm-helper
+          /tmp/crabbox-apple-vm-helper vmd-info | grep -q '"embedded":true'
+
   desktop-resize:
+    # workflow_dispatch only, so no fork path exists; the job never sees untrusted PR code.
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.desktop-resize-only }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 45
