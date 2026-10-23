@@ -599,6 +599,67 @@ func TestReleaseRemovesOwnedProcessCheckpointsBeforeTheContainer(t *testing.T) {
 	}
 }
 
+// nerdctl`checkpoint ls` errors instead of returning an empty list when the
+// checkpoint base directory has never existed; a checkpoint-free lease must
+// still release.
+func TestReleaseToleratesNerdctlEmptyCheckpointDirectory(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	runner := &recordingRunner{run: func(req core.LocalCommandRequest) (core.LocalCommandResult, error) {
+		switch {
+		case findArg(req.Args, "info"):
+			output, _ := jsonInfo(daemonInfo{ID: checkpointTestDaemonID})
+			return core.LocalCommandResult{Stdout: output}, nil
+		case findArg(req.Args, "namespace", "ls"):
+			return core.LocalCommandResult{Stdout: "default\n"}, nil
+		case findArg(req.Args, "checkpoint", "ls", checkpointTestContainer):
+			return core.LocalCommandResult{
+				ExitCode: 1,
+				Stderr:   `time="2026-10-23T20:56:10Z" level=fatal msg="checkpoint  does not exist for container ` + checkpointTestContainer + `"`,
+			}, errors.New("exit status 1")
+		case findArg(req.Args, "stop"):
+			return core.LocalCommandResult{}, nil
+		case findArg(req.Args, "rm", "-f"):
+			return core.LocalCommandResult{}, nil
+		case findArg(req.Args, "ps", "-a", "--filter", "name=^"+checkpointTestContainer+"$"):
+			return core.LocalCommandResult{}, nil
+		}
+		return core.LocalCommandResult{}, nil
+	}}
+	if err := testBackend(runner).ReleaseLease(t.Context(), core.ReleaseLeaseRequest{Lease: core.LeaseTarget{
+		LeaseID: checkpointTestLeaseID,
+		Server:  core.Server{Name: checkpointTestContainer},
+	}}); err != nil {
+		t.Fatalf("a lease with no checkpoints must release: %v", err)
+	}
+	if hasRecordedCall(runner.calls, "checkpoint", "rm") {
+		t.Fatal("no checkpoint rm may run when the checkpoint directory is absent")
+	}
+}
+
+// Any other checkpoint-list failure is still a real release failure.
+func TestReleaseStillFailsOnARealCheckpointListError(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	runner := &recordingRunner{run: func(req core.LocalCommandRequest) (core.LocalCommandResult, error) {
+		switch {
+		case findArg(req.Args, "info"):
+			output, _ := jsonInfo(daemonInfo{ID: checkpointTestDaemonID})
+			return core.LocalCommandResult{Stdout: output}, nil
+		case findArg(req.Args, "namespace", "ls"):
+			return core.LocalCommandResult{Stdout: "default\n"}, nil
+		case findArg(req.Args, "checkpoint", "ls", checkpointTestContainer):
+			return core.LocalCommandResult{ExitCode: 1, Stderr: "permission denied"}, errors.New("exit status 1")
+		}
+		return core.LocalCommandResult{}, nil
+	}}
+	err := testBackend(runner).ReleaseLease(t.Context(), core.ReleaseLeaseRequest{Lease: core.LeaseTarget{
+		LeaseID: checkpointTestLeaseID,
+		Server:  core.Server{Name: checkpointTestContainer},
+	}})
+	if err == nil {
+		t.Fatal("a real checkpoint-list error must still fail release")
+	}
+}
+
 // The doctor and the checkpoint seam share ONE pre-flight: rc 0 AND the
 // supported line on either stream. A doctor that only looked at stdout or only
 // at the exit code would report a host healthy that the capture refuses.

@@ -23,8 +23,31 @@ while IFS= read -r -d '' modfile; do
     rel="."
   fi
   found=1
-  printf '+ (cd %q && go test -timeout=20m ./...)\n' "$rel"
-  (cd "$dir" && go test -timeout=20m ./...)
+  # The root module also contains internal/cli, the slowest package in the tree.
+  # It is covered AUTHORITATIVELY by the four CLI race shards
+  # (scripts/test-go-shard.py selects every top-level Test/Example/Fuzz) and by
+  # the CLI coverage shards. Running the whole package here as well duplicates
+  # that coverage and shares ONE 20-minute package budget: on a 2-vCPU runner it
+  # consumes ~19 of those 20 minutes, so the 64-second coordinator-stop contract
+  # inherited a 48-second deadline and panicked (CI run 39961798509). This job
+  # tests the rest of the module; the shards own internal/cli.
+  packages=(./...)
+  if [[ "$rel" == "." ]]; then
+    # Capture go list separately: a FAILING go list can still emit a partial
+    # package list, and filtering that would silently skip the package that
+    # failed to load. Fail closed before filtering.
+    if ! list_output="$(cd "$dir" && go list ./...)"; then
+      printf 'go list failed for the root module\n' >&2
+      exit 1
+    fi
+    mapfile -t packages < <(printf '%s\n' "$list_output" | grep -v '/internal/cli$' || true)
+    if [[ "${#packages[@]}" -eq 0 ]]; then
+      printf 'the root module resolved no packages after excluding internal/cli\n' >&2
+      exit 1
+    fi
+  fi
+  printf '+ (cd %q && go test -timeout=20m %s)\n' "$rel" "${packages[*]}"
+  (cd "$dir" && go test -timeout=20m "${packages[@]}")
 done <"$modules_file"
 
 if [[ "$found" -eq 0 ]]; then

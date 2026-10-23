@@ -118,7 +118,7 @@ SSH-lease providers:
 - Static/BYO SSH host: `internal/providers/ssh`, with target mapping in `internal/cli/static.go`
 - Donated container capacity: `internal/providers/serve`, `internal/cli/serve.go`, `worker/src/serve.ts`; shared creation/bootstrap in `internal/providers/localcontainer/served.go`
 - Local Docker container: `internal/providers/localcontainer`
-- containerd (`containerd`, alias `nerdctl`): `internal/providers/containerd`; the shared guest bootstrap script lives in `internal/providers/shared/containerbootstrap`; config wiring in `internal/cli/config_containerd.go`
+- containerd (`containerd`): `internal/providers/containerd`; the shared guest bootstrap script lives in `internal/providers/shared/containerbootstrap`; config wiring in `internal/cli/config_containerd.go`
 - Apple `Virtualization.framework` Linux VM helper and provider:
   `internal/applevmhelper`, `internal/providers/applevm`; the Swift VM daemon
   lives in `vmd/` and is embedded into the helper by `scripts/build-vmd.sh`

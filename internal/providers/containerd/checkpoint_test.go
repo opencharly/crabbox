@@ -242,10 +242,14 @@ func TestCreateNativeCheckpointSequence(t *testing.T) {
 			t.Fatalf("copy helper argv=%v missing %v", copyCall.Args, want)
 		}
 	}
-	// The copy uses the image that was just committed, and no guest command
+	// The copy uses the image that was just committed, BY TAG: a bare
+	// "sha256:<hex>" is not a valid nerdctl reference (MEASURED: it parses as
+	// host:port and fails 'invalid port ... after host'), so the digest the
+	// commit returned cannot be the helper's image argument. No guest command
 	// ever reaches for nerdctl exec or --pid host.
-	if !findArg(copyCall.Args, checkpointTestNewImageID) {
-		t.Fatalf("copy helper argv=%v did not use the committed image", copyCall.Args)
+	committedTag := containercheckpoint.TagName("checkpoint", "cp-0123456789ab")
+	if !findArg(copyCall.Args, committedTag) {
+		t.Fatalf("copy helper argv=%v did not use the committed tag %q", copyCall.Args, committedTag)
 	}
 	runner.mu.Lock()
 	for _, call := range runner.calls {
@@ -768,5 +772,77 @@ func TestValidateCheckpointForkScopeAndClone(t *testing.T) {
 		!hasRecordedCall(runner.calls, "-v", "crabbox-cp-cp-0123456789ab-state:/src:ro") ||
 		!hasRecordedCall(runner.calls, "-v", "crabbox-cbx_ffffffffffff-state:/dst") {
 		t.Fatalf("fork clone argv missing: %+v", runner.calls)
+	}
+}
+
+// The lease SSH user is non-root on a stock image, and /etc/machine-id is
+// root-owned: a capture that writes it without escalation fails with
+// "Permission denied" before the commit starts (measured against the live
+// rootless daemon). Every machine-id step must escalate through the
+// passwordless sudo the container bootstrap grants the lease user.
+func TestMachineIDStepsEscalateToRootForANonRootLease(t *testing.T) {
+	steps := map[string]string{
+		"empty":   checkpointEmptyMachineIDScript(),
+		"restore": checkpointRestoreMachineIDScript(),
+		"remove":  checkpointRemoveMachineIDScript(),
+	}
+	for name, script := range steps {
+		if !strings.Contains(script, "sudo -n") {
+			t.Errorf("%s machine-id step has no root escalation: %q", name, script)
+		}
+		if !strings.Contains(script, "as_root") {
+			t.Errorf("%s machine-id step does not route its write through as_root: %q", name, script)
+		}
+	}
+	if !strings.Contains(steps["empty"], "as_root sh -c ': > /etc/machine-id'") {
+		t.Errorf("empty step does not escalate the write: %q", steps["empty"])
+	}
+	if !strings.Contains(steps["restore"], "as_root sh -c 'cat > /etc/machine-id'") {
+		t.Errorf("restore step does not escalate the write: %q", steps["restore"])
+	}
+}
+
+// Remove-before-clone is the normal path: the destination volume does not
+// exist yet. Docker and nerdctl spell that differently, and matching only
+// Docker's wording made the first capture of every lease fail on a volume that
+// never existed (measured: 'volume "crabbox-cp-chk-…-state": not found').
+func TestMissingVolumeIsToleratedInEveryDaemonWording(t *testing.T) {
+	tolerated := map[string]core.LocalCommandResult{
+		"docker":  {ExitCode: 1, Stderr: "Error response from daemon: no such volume: crabbox-cp-x-state"},
+		"nerdctl": {ExitCode: 1, Stderr: "time=\"t\" level=warning msg=\"volume \\\"crabbox-cp-x-state\\\": not found\"\ntime=\"t\" level=fatal msg=\"some volumes could not be removed\""},
+	}
+	for name, result := range tolerated {
+		if !checkpointVolumeMissing(result, errors.New("exit status 1")) {
+			t.Errorf("%s: a missing volume must be tolerated", name)
+		}
+	}
+	for name, stderr := range map[string]string{
+		"in use":        "volume crabbox-cp-x-state is in use",
+		"plugin absent": "volume plugin not found",
+	} {
+		real := core.LocalCommandResult{ExitCode: 1, Stderr: stderr}
+		if checkpointVolumeMissing(real, errors.New("exit status 1")) {
+			t.Errorf("%s: a real failure was classified as a missing volume", name)
+		}
+	}
+	if checkpointVolumeMissing(core.LocalCommandResult{ExitCode: 1, Stderr: `volume "x": not found`}, nil) != true {
+		t.Error("a nil error must not panic and the nerdctl wording must be tolerated")
+	}
+}
+
+// A restore receives the lease SSH target from the CLI, so it never passes
+// through sshTargetForPort. Without applying the lease readiness contract, the
+// restore re-creates the container and then waits for the prepared-image marker
+// no stock image ships (measured: a restore that timed out with
+// authentication=ok and the port published).
+func TestRestoreTargetGetsTheLeaseReadinessContract(t *testing.T) {
+	cfg := checkpointTestConfig()
+	got := checkpointReadyTarget(cfg, core.SSHTarget{})
+	if got.ReadyCheck != leaseReadyCheck(cfg.Containerd.WorkRoot) {
+		t.Fatalf("restore target ReadyCheck=%q want %q", got.ReadyCheck, leaseReadyCheck(cfg.Containerd.WorkRoot))
+	}
+	explicit := core.SSHTarget{ReadyCheck: "test -f /custom/ready"}
+	if kept := checkpointReadyTarget(cfg, explicit); kept.ReadyCheck != explicit.ReadyCheck {
+		t.Fatalf("an explicit ReadyCheck was overwritten: %q", kept.ReadyCheck)
 	}
 }

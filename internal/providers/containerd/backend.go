@@ -274,6 +274,9 @@ func (b *backend) leaseFromClaim(ctx context.Context, claim core.LeaseClaim, pre
 	target.Port = strconv.Itoa(claim.SSHPort)
 	target.User = b.cfg.Containerd.User
 	target.Key = ""
+	// A resolved lease waits on the same readiness contract as an acquired one;
+	// this target is built here rather than by sshTargetForPort.
+	target = checkpointReadyTarget(b.cfg, target)
 	if err := core.UseStoredTestboxKey(&target, claim.LeaseID); err != nil {
 		return core.LeaseTarget{}, err
 	}
@@ -933,6 +936,29 @@ func shortID(id string) string {
 
 // ---- SSH target, port allocation, forwarding, and the readiness hook ----
 
+// leaseReadyCheck is the readiness contract for a containerd lease: the work
+// root the container bootstrap creates. It is deliberately NOT the
+// prepared-image marker /usr/local/bin/crabbox-ready — a stock OCI image never
+// ships that marker, and this provider's bootstrap execs sshd only AFTER it
+// created and chowned the work root, so a writable work root proves the
+// bootstrap finished. Without it the generic probe waits for a file a stock
+// lease can never have until the readiness deadline. An image that needs deeper
+// readiness still ships the optional /usr/local/libexec/crabbox/ready hook,
+// which runs after SSH readiness (CONTAINERD-IMAGES.md §2.1).
+func leaseReadyCheck(workRoot string) string {
+	return "test -w " + core.ShellQuote(workRoot)
+}
+
+// checkpointReadyTarget applies leaseReadyCheck to a target that did not come
+// through sshTargetForPort (a restore receives the lease target from the CLI).
+// An existing ReadyCheck is never overwritten.
+func checkpointReadyTarget(cfg core.Config, target core.SSHTarget) core.SSHTarget {
+	if strings.TrimSpace(target.ReadyCheck) == "" {
+		target.ReadyCheck = leaseReadyCheck(cfg.Containerd.WorkRoot)
+	}
+	return target
+}
+
 func (b *backend) sshTargetForPort(ctx context.Context, leaseID, hostPort string) (core.SSHTarget, error) {
 	target := core.SSHTargetFromConfig(b.cfg, "127.0.0.1")
 	target.TargetOS = core.TargetLinux
@@ -941,6 +967,7 @@ func (b *backend) sshTargetForPort(ctx context.Context, leaseID, hostPort string
 	// SSH user.
 	target.User = b.cfg.Containerd.User
 	target.Key = ""
+	target = checkpointReadyTarget(b.cfg, target)
 	if err := core.UseStoredTestboxKey(&target, leaseID); err != nil {
 		return core.SSHTarget{}, err
 	}

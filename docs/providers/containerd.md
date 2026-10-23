@@ -2,7 +2,7 @@
 
 Read this when you:
 
-- choose `provider: containerd` (alias `nerdctl`);
+- choose `provider: containerd`;
 - run Crabbox leases through containerd on the local machine or a remote Linux
   host;
 - change `internal/providers/containerd` or the shared
@@ -39,10 +39,10 @@ Local daemon:
 
 ```sh
 crabbox run --provider containerd -- sh -c 'uname -s; id -un'
-crabbox warmup --provider nerdctl --containerd-image docker.io/library/ubuntu:24.04 --slug ct-smoke
-crabbox ssh --provider nerdctl --id ct-smoke
+crabbox warmup --provider containerd --containerd-image docker.io/library/ubuntu:24.04 --slug ct-smoke
+crabbox ssh --provider containerd --id ct-smoke
 crabbox doctor --provider containerd
-crabbox stop --provider nerdctl ct-smoke
+crabbox stop --provider containerd ct-smoke
 ```
 
 A rootless daemon is not inferred from the socket: the provider verifies the
@@ -145,6 +145,7 @@ silently downgraded.
 | `runtime: krun` + `gpu: drm` | krun takes GPUs through `krun.gpu_flags`, never `--device /dev/dri` | `gpu: virtio`, or crun/runc + `gpu: drm` |
 | `gpu: virtio` with crun/runc | virtio GPU flags are a krun handler annotation | `runtime: krun`, or `gpu: drm`/`nvidia` |
 | krun GPU + guest RAM below 4 GiB | the guest OOM-kills Vulkan compute at 1 GiB; the guest sees `memory` minus `krunRamHeadroomMiB` | raise `memory` to at least 4 GiB plus `krunRamHeadroomMiB` (4352m with the default 256 MiB headroom) |
+| `--desktop` / `--browser` / `--code` / `--tailscale` on an image that does not carry it | the capability lives in the prepared image's layers, not the base SSH contract | set `containerd.image` to the matching `pod-crabbox-desktop` / `-browser` / `-code` / `-tailscale` image |
 | browser/desktop without the profile | stock seccomp breaks Chromium's sandbox | install the profile from `CONTAINERD.md` §3.1 |
 | image label `crabbox.krun.network=passt` + `krunNetwork: tsi` | TSI collapses the pod netns and breaks CRIU's loopback probe | `krunNetwork: passt` |
 
@@ -251,7 +252,8 @@ name**, for each `pod-crabbox*` image the host does not have yet. A host without
 a reachable containerd daemon skips visibly; so does a rootless host whose CNI
 `portmap` plugin cannot append its `iptables -m multiport` rule because the
 kernel lacks `xt_multiport` (the host layer owns that prerequisite). Nothing is
-mocked.
+mocked. Set `CRABBOX_LIVE_CONTAINERD_STRICT=1` to turn a skip into a non-zero
+exit, and `CRABBOX_LIVE_CONTAINERD_IMAGES=0` to run only the base row.
 
 ## Related docs
 

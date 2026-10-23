@@ -348,7 +348,8 @@ func restoreProcessCheckpoint(ctx context.Context, req core.NativeCheckpointRest
 	if err != nil {
 		return core.NativeCheckpointRestoreResult{}, core.Exit(7, "nerdctl start --checkpoint %s %s: %v: %s", name, container, err, containercheckpoint.TrimFailure(result.Stderr))
 	}
-	if err := waitForCheckpointSSH(ctx, &req.Target, providerOperationRuntime(nil).Stderr, "containerd process restore ssh", core.BootstrapWaitTimeout(cfg)); err != nil {
+	readyTarget := checkpointReadyTarget(cfg, req.Target)
+	if err := waitForCheckpointSSH(ctx, &readyTarget, providerOperationRuntime(nil).Stderr, "containerd process restore ssh", core.BootstrapWaitTimeout(cfg)); err != nil {
 		return core.NativeCheckpointRestoreResult{}, err
 	}
 	if err := b.runReadinessHook(ctx, req.LeaseID, req.Target); err != nil {
@@ -407,6 +408,16 @@ func parseCheckpointNames(output string) []string {
 	return names
 }
 
+// checkpointListEmpty reports nerdctl's `checkpoint ls` quirk: when the
+// checkpoint base directory has never been created (no checkpoints exist on
+// the host/namespace), nerdctl returns
+// `checkpoint  does not exist for container <id>` — an EMPTY checkpoint name —
+// instead of an empty list. For release that means "nothing to remove", not a
+// failure; every checkpoint-free lease would otherwise never release.
+func checkpointListEmpty(result core.LocalCommandResult) bool {
+	return strings.Contains(result.Stderr+"\n"+result.Stdout, "checkpoint  does not exist for container")
+}
+
 // removeOwnedProcessCheckpoints deletes this lease's process checkpoints
 // BEFORE the container is removed. A checkpoint is scoped to its container
 // under the nerdctl data root, so removing the container first would leave an
@@ -420,7 +431,7 @@ func (b *backend) removeOwnedProcessCheckpoints(ctx context.Context, leaseID, co
 	}
 	names, listErr := checkpointProcessNames(ctx, b.runner(), container)
 	if listErr != nil {
-		if containerNotFound(listErr.result) {
+		if containerNotFound(listErr.result) || checkpointListEmpty(listErr.result) {
 			return nil
 		}
 		return shared.LocalCommandError("nerdctl checkpoint ls", listErr.result, listErr.err)

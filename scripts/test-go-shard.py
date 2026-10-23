@@ -35,6 +35,12 @@ from pathlib import Path
 SLOW_SECONDS = 15
 SLOW_TESTS = {
     "TestCoordinatorStopAggregateGuestCleanupPreservesReleaseBudget": 64,
+    # CI shard summaries (run 39961798509) report this unlisted at 275.490 s and
+    # TestSSHCommandEnvCleanupVerification unlisted at 25.170 s; the rule above
+    # requires every test at SLOW_SECONDS or more to be listed, or the shard
+    # totals stay uneven and a 2-vCPU shard can hit its 10-minute package cap.
+    "TestRunDetachedGitSeedPreservesManifestAuthority": 276,
+    "TestSSHCommandEnvCleanupVerification": 26,
     "TestWSLStageInitialHandoffBudgets": 38,
     "TestWaitForSSHReadyRealSSHTimeoutDiagnostic": 32,
     "TestHeartbeatCoordinatorWaitsForAccessRefresh": 31,
