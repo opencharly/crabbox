@@ -33,6 +33,10 @@ function moduleFixture(t, findScript) {
     path.join(bin, "go"),
     `#!/usr/bin/env bash
 set -euo pipefail
+if [ "\${1:-}" = "list" ]; then
+  printf '%s\\n' example.test/fixture example.test/fixture/internal/cli example.test/fixture/other
+  exit "\${GO_LIST_EXIT:-0}"
+fi
 printf '%s\\t%s\\n' "$PWD" "$*" >>"$GO_TEST_LOG"
 exit "\${GO_TEST_EXIT:-0}"
 `,
@@ -42,7 +46,7 @@ exit "\${GO_TEST_EXIT:-0}"
     root,
     modules,
     calls: () => (fs.existsSync(goLog) ? fs.readFileSync(goLog, "utf8").trimEnd().split("\n") : []),
-    run: (exitCode = 0) => {
+    run: (exitCode = 0, extraEnv = {}) => {
       const result = spawnSync("bash", ["scripts/test-go-modules.sh"], {
         cwd: root,
         env: {
@@ -50,6 +54,7 @@ exit "\${GO_TEST_EXIT:-0}"
           PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
           GO_TEST_LOG: goLog,
           GO_TEST_EXIT: String(exitCode),
+          ...extraEnv,
         },
         encoding: "utf8",
       });
@@ -76,7 +81,13 @@ for (const discovery of ["real find", "fake find"]) {
     assert.deepEqual(
       fixture.calls().sort(),
       fixture.modules
-        .map((module) => `${fs.realpathSync(path.join(fixture.root, module))}\ttest -timeout=20m ./...`)
+        .map((module) => {
+          const dir = fs.realpathSync(path.join(fixture.root, module));
+          // The root module runs the packages go list resolves, minus its
+          // internal/cli package; every other module keeps ./...
+          const target = module === "." ? "example.test/fixture example.test/fixture/other" : "./...";
+          return `${dir}\ttest -timeout=20m ${target}`;
+        })
         .sort(),
     );
     assert.match(result.stdout, /go test -timeout=20m \.\/\.\.\./);
@@ -113,5 +124,19 @@ test("ordinary module test failure propagates without running later modules", (t
   );
   const result = fixture.run(23);
   assert.equal(result.status, 23, result.stdout + result.stderr);
-  assert.deepEqual(fixture.calls(), [`${fs.realpathSync(fixture.root)}\ttest -timeout=20m ./...`]);
+  assert.deepEqual(fixture.calls(), [`${fs.realpathSync(fixture.root)}\ttest -timeout=20m example.test/fixture example.test/fixture/other`]);
+});
+
+test("a failing go list fails closed instead of testing a partial package list", (t) => {
+  const fixture = moduleFixture(
+    t,
+    `printf '%s\\0' "$1/go.mod"`,
+  );
+  // The fake go list emits packages and then exits nonzero, as Go does when one
+  // package cannot load. Testing only the emitted subset would hide that package.
+  const result = fixture.run(0, { GO_LIST_EXIT: "7" });
+
+  assert.notEqual(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stderr, /go list failed for the root module/);
+  assert.deepEqual(fixture.calls(), [], "go test must not run against a partial package list");
 });

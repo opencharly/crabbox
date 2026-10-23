@@ -198,7 +198,11 @@ func (Provider) CreateNativeCheckpoint(ctx context.Context, req core.NativeCheck
 	}
 
 	if volume := strings.TrimSpace(metadata[checkpointMetadataStateVolume]); volume != "" {
-		if err := checkpointCloneVolume(ctx, runner, cfg, imageID, volume, metadata[checkpointMetadataCheckpointVol]); err != nil {
+		// The clone helper must run the committed TAG, never the bare digest: a
+		// sha256: image id is not a valid image REFERENCE for nerdctl, which parses
+		// "sha256:<hex>" as a host:port and fails with 'invalid port ":<hex>" after
+		// host' before the copy starts (measured).
+		if err := checkpointCloneVolume(ctx, runner, cfg, tag, volume, metadata[checkpointMetadataCheckpointVol]); err != nil {
 			return core.NativeCheckpointCreateResult{
 				Image: core.NativeCheckpointImage{
 					ID: imageID, Name: tag, State: "cleanup_failed", Provider: providerName,
@@ -438,7 +442,8 @@ func restoreCommittedCheckpoint(ctx context.Context, req core.NativeCheckpointRe
 			return core.NativeCheckpointRestoreResult{}, err
 		}
 	}
-	if err := waitForCheckpointSSH(ctx, &req.Target, providerOperationRuntime(nil).Stderr, "containerd restore ssh", core.BootstrapWaitTimeout(cfg)); err != nil {
+	readyTarget := checkpointReadyTarget(cfg, req.Target)
+	if err := waitForCheckpointSSH(ctx, &readyTarget, providerOperationRuntime(nil).Stderr, "containerd restore ssh", core.BootstrapWaitTimeout(cfg)); err != nil {
 		return core.NativeCheckpointRestoreResult{}, err
 	}
 	if err := b.runReadinessHook(ctx, req.LeaseID, req.Target); err != nil {
@@ -739,17 +744,41 @@ func checkpointRequireGNUCopyImage(ctx context.Context, runner commandRunner, cf
 	return nil
 }
 
-// checkpointEmptyMachineID returns the original machine-id bytes and leaves the
-// file empty so the committed image boots with a fresh identity.
-func checkpointEmptyMachineID(ctx context.Context, rt core.Runtime, target core.SSHTarget) (string, error) {
-	script := `set -eu
-if [ -e /etc/machine-id ]; then
+// checkpointRootHelper escalates a machine-id step to root when the lease SSH
+// user is not root (the common case: the container bootstrap creates a
+// non-root lease user and grants it passwordless sudo). /etc/machine-id is
+// root-owned, so running the write as the lease user fails with "Permission
+// denied" and the capture never starts.
+const checkpointRootHelper = `as_root() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo -n "$@"; fi; }
+`
+
+// checkpointEmptyMachineIDScript returns the original machine-id bytes and
+// leaves the file empty. The write is the root-only step.
+func checkpointEmptyMachineIDScript() string {
+	return `set -eu
+` + checkpointRootHelper + `if [ -e /etc/machine-id ]; then
   cat /etc/machine-id
 else
   printf '` + machineIDMissing + `'
 fi
-: > /etc/machine-id
+as_root sh -c ': > /etc/machine-id'
 `
+}
+
+// checkpointRestoreMachineIDScript rewrites the recorded bytes, as root.
+func checkpointRestoreMachineIDScript() string {
+	return checkpointRootHelper + `as_root sh -c 'cat > /etc/machine-id'`
+}
+
+// checkpointRemoveMachineIDScript removes the temporary file, as root.
+func checkpointRemoveMachineIDScript() string {
+	return checkpointRootHelper + `as_root rm -f /etc/machine-id`
+}
+
+// checkpointEmptyMachineID returns the original machine-id bytes and leaves the
+// file empty so the committed image boots with a fresh identity.
+func checkpointEmptyMachineID(ctx context.Context, rt core.Runtime, target core.SSHTarget) (string, error) {
+	script := checkpointEmptyMachineIDScript()
 	result, err := runOverSSHTarget(ctx, rt, target, script, nil)
 	if err != nil || result.ExitCode != 0 {
 		return "", core.Exit(7, "empty /etc/machine-id over SSH: %v: %s", err, containercheckpoint.TrimFailure(result.Stderr))
@@ -765,13 +794,13 @@ fi
 // the finally step: it runs even when the commit failed.
 func checkpointRestoreMachineID(ctx context.Context, rt core.Runtime, target core.SSHTarget, value string) error {
 	if value == machineIDMissing {
-		result, err := runOverSSHTarget(ctx, rt, target, "rm -f /etc/machine-id", nil)
+		result, err := runOverSSHTarget(ctx, rt, target, checkpointRemoveMachineIDScript(), nil)
 		if err != nil || result.ExitCode != 0 {
 			return core.Exit(7, "remove the checkpoint's temporary /etc/machine-id: %v: %s", err, containercheckpoint.TrimFailure(result.Stderr))
 		}
 		return nil
 	}
-	result, err := runOverSSHTarget(ctx, rt, target, "cat > /etc/machine-id", strings.NewReader(value))
+	result, err := runOverSSHTarget(ctx, rt, target, checkpointRestoreMachineIDScript(), strings.NewReader(value))
 	if err != nil || result.ExitCode != 0 {
 		return core.Exit(7, "restore /etc/machine-id over SSH: %v: %s", err, containercheckpoint.TrimFailure(result.Stderr))
 	}
@@ -873,9 +902,29 @@ func checkpointCloneVolume(ctx context.Context, runner commandRunner, cfg core.C
 	return nil
 }
 
+// checkpointVolumeMissing reports the daemon's missing-volume wording. Docker
+// says "no such volume"; nerdctl says 'volume "<name>": not found'. Both are the
+// EXPECTED state before a clone creates its destination, so remove-before-clone
+// must tolerate them or the first capture of every lease fails on the cleanup
+// of a volume that never existed.
+func checkpointVolumeMissing(result core.LocalCommandResult, err error) bool {
+	// nerdctl's logfmt output escapes the quotes inside its message
+	// (`msg="volume \"<name>\": not found"`), so normalize them away before
+	// matching the phrasing.
+	text := strings.ToLower(strings.ReplaceAll(result.Stderr, `\`, ""))
+	if err != nil {
+		text += strings.ToLower(strings.ReplaceAll(err.Error(), `\`, ""))
+	}
+	// Docker: `no such volume: <name>`. nerdctl: `volume "<name>": not found`.
+	// Match each daemon's actual phrasing: a generic "volume ... not found"
+	// would also swallow a real failure such as "volume plugin not found".
+	return strings.Contains(text, "no such volume") ||
+		(strings.Contains(text, `volume "`) && strings.Contains(text, `": not found`))
+}
+
 func checkpointRemoveVolume(ctx context.Context, runner commandRunner, volume string) error {
 	result, err := runner.nerdctlOutput(ctx, "volume", "rm", "--force", volume)
-	if err != nil && !strings.Contains(strings.ToLower(result.Stderr+err.Error()), "no such volume") {
+	if err != nil && !checkpointVolumeMissing(result, err) {
 		return shared.LocalCommandError("nerdctl volume rm", result, err)
 	}
 	return nil

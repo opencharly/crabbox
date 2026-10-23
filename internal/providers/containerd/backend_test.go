@@ -130,3 +130,26 @@ func TestNerdctlGlobalArgsOrder(t *testing.T) {
 		t.Fatalf("global args=%v want %v", args, want)
 	}
 }
+
+// A stock OCI image never ships the prepared-image marker
+// /usr/local/bin/crabbox-ready, so the generic readiness probe would wait for a
+// file the lease can never have until the deadline. The lease's own readiness
+// contract is the work root its bootstrap created.
+func TestLeaseReadinessIsTheBootstrapWorkRoot(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	b := testBackend(&recordingRunner{})
+	target, err := b.sshTargetForPort(t.Context(), "cbx_lease", "34457")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.ReadyCheck == "" {
+		t.Fatal("lease ReadyCheck is empty; the generic probe then requires the prepared-image marker /usr/local/bin/crabbox-ready, which a stock image does not ship")
+	}
+	if strings.TrimSpace(b.cfg.Containerd.WorkRoot) == "" {
+		t.Fatal("test backend has no work root; the readiness assertion would be vacuous")
+	}
+	if !strings.Contains(target.ReadyCheck, b.cfg.Containerd.WorkRoot) {
+		t.Fatalf("ReadyCheck %q does not assert the lease work root %q", target.ReadyCheck, b.cfg.Containerd.WorkRoot)
+	}
+}

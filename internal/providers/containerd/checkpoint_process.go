@@ -348,7 +348,8 @@ func restoreProcessCheckpoint(ctx context.Context, req core.NativeCheckpointRest
 	if err != nil {
 		return core.NativeCheckpointRestoreResult{}, core.Exit(7, "nerdctl start --checkpoint %s %s: %v: %s", name, container, err, containercheckpoint.TrimFailure(result.Stderr))
 	}
-	if err := waitForCheckpointSSH(ctx, &req.Target, providerOperationRuntime(nil).Stderr, "containerd process restore ssh", core.BootstrapWaitTimeout(cfg)); err != nil {
+	readyTarget := checkpointReadyTarget(cfg, req.Target)
+	if err := waitForCheckpointSSH(ctx, &readyTarget, providerOperationRuntime(nil).Stderr, "containerd process restore ssh", core.BootstrapWaitTimeout(cfg)); err != nil {
 		return core.NativeCheckpointRestoreResult{}, err
 	}
 	if err := b.runReadinessHook(ctx, req.LeaseID, req.Target); err != nil {
