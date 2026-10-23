@@ -122,7 +122,9 @@ test("the containerd row pins its tools, gates xt_multiport loudly, and rejects 
   assert.match(install, /NERDCTL_SHA256: f6bbf02fd8a299cbcbc71a0bad113c1b63b3f33689bbb7d51b0fa98c6d361d5e\n/);
   assert.match(install, /CNI_VERSION: 1\.9\.1\n/);
   assert.match(install, /CNI_SHA256: b98f74a0f8522f0a83867178729c1aa70f2158f90c45a2ca8fa791db1c76b303\n/);
-  assert.match(install, /sudo apt-get install -y containerd runc/);
+  assert.match(install, /if ! command -v containerd >\/dev\/null 2>&1; then\n            sudo apt-get install -y containerd\n          fi/);
+  assert.match(install, /if ! command -v runc >\/dev\/null 2>&1; then\n            sudo apt-get install -y runc\n          fi/);
+  assert.doesNotMatch(install, /apt-get install -y containerd runc/, "must not force the Ubuntu containerd package over Docker's containerd.io");
   assert.match(install, /systemctl enable --now containerd/);
   assert.match(install, /-C \/opt\/cni\/bin/);
   assert.match(install, /sha256sum --check --strict/);

@@ -146,8 +146,10 @@ jobs:
         if: matrix.name == 'containerd'
         env:
           # nerdctl is not packaged in Ubuntu 24.04; pin the release and its
-          # checksum. containerd and runc come from the Ubuntu archive, whose
-          # package version is fixed by the runner image's release pocket.
+          # checksum. A containerd and runc already on the runner image are
+          # used as-is: the Docker runner ships containerd.io, and installing
+          # the Ubuntu `containerd` package would make docker-ce uninstallable
+          # (docker-ce Depends: containerd.io).
           NERDCTL_VERSION: 2.4.1
           NERDCTL_SHA256: f6bbf02fd8a299cbcbc71a0bad113c1b63b3f33689bbb7d51b0fa98c6d361d5e
           CNI_VERSION: 1.9.1
@@ -155,7 +157,12 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y containerd runc
+          if ! command -v containerd >/dev/null 2>&1; then
+            sudo apt-get install -y containerd
+          fi
+          if ! command -v runc >/dev/null 2>&1; then
+            sudo apt-get install -y runc
+          fi
           sudo systemctl enable --now containerd
 
           nerdctl_archive="$RUNNER_TEMP/nerdctl-$NERDCTL_VERSION-linux-amd64.tar.gz"
