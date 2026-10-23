@@ -15,7 +15,12 @@ set -euo pipefail
 #   CRABBOX_SSH_LOCALHOST_USER   SSH user (default: current user)
 #   CRABBOX_SSH_LOCALHOST_PORT   SSH port (default: 22)
 
-slug="ssh-localhost-smoke-$(date +%Y%m%d%H%M%S)-$$"
+# BOUNDED slug. `crabbox` rejects an id longer than 41 characters after normalization, and
+# the old `...-$$` form was 39-42 characters depending on how wide the shell's PID happens to
+# be: on a long-lived runner VM the PID is wide enough to exceed the limit and the smoke fails
+# with "classification=environment_blocked" before it does anything. A fixed three-digit
+# suffix keeps the id at 38 characters; the timestamp already separates runs.
+slug="ssh-localhost-smoke-$(date +%Y%m%d%H%M%S)-$(printf '%03d' $(( $$ % 1000 )))"
 bin="${CRABBOX_BIN:-./bin/crabbox}"
 # Keep relative binary paths valid after entering the owned fixture project.
 if [[ "$bin" != /* ]]; then
