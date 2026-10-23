@@ -29,7 +29,10 @@ on:
 
 permissions:
   contents: read
+  # ONE comment per pull request.
   pull-requests: write
+  # The advisory labels live on issues: clawsweeper:reviewed / clawsweeper:needs-attention.
+  issues: write
   # The review image is an org-internal GHCR package; a called workflow can hold only what
   # its caller grants.
   packages: read
