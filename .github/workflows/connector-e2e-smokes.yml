@@ -402,6 +402,9 @@ jobs:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Reset any krun runtime set an earlier job left behind
+        run: scripts/krun-guest-proof/reset-runtime-set.sh
+
       - name: ABSENCE — the /dev/kvm measurement and the missing runtime set
         id: venue
         run: |
@@ -740,3 +743,10 @@ jobs:
           sudo nerdctl --namespace default logs krun-proof 2>&1 || true
           sudo journalctl -u containerd --no-pager -n 100 2>&1 || true
           sudo containerd config dump 2>&1 | grep -B2 -A6 'containerd\.runtimes\.krun' || true
+
+      - name: Leave the runner at its baseline
+        if: always()
+        run: |
+          if [ -x scripts/krun-guest-proof/reset-runtime-set.sh ]; then
+            scripts/krun-guest-proof/reset-runtime-set.sh
+          fi
