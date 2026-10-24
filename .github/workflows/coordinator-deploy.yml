@@ -37,7 +37,7 @@ concurrency:
 jobs:
   deploy:
     name: Deploy crabbox-coordinator
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 15
     # Scope the Cloudflare token to this environment; add required reviewers here
     # to gate production deploys without changing the workflow.

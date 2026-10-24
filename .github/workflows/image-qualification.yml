@@ -57,7 +57,7 @@ env:
 jobs:
   authorize:
     name: Authorize exact candidate
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 5
     outputs:
       candidate_sha: ${{ steps.authorize.outputs.candidate_sha }}
@@ -76,7 +76,7 @@ jobs:
   build-candidate:
     name: Build and seal candidate without credentials
     needs: authorize
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 20
     outputs:
       candidate_artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
@@ -162,7 +162,7 @@ jobs:
   admit:
     name: Prepare protected qualification handoff
     needs: [authorize, build-candidate]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 5
     environment: image-qualification
     outputs:
@@ -213,7 +213,7 @@ jobs:
   deploy-enroll:
     name: Deploy after exact IAM binding and credential custody
     needs: [authorize, build-candidate, admit]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 15
     environment: image-qualification
     outputs:
@@ -292,7 +292,7 @@ jobs:
   arm:
     name: Protected final deployment admission
     needs: [authorize, build-candidate, admit, deploy-enroll]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 5
     environment: image-qualification
     steps:
@@ -358,7 +358,7 @@ jobs:
   execute:
     name: Execute candidate without cloud credentials
     needs: [authorize, build-candidate, deploy-enroll, arm]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: ${{ inputs.mode == 'retained' && 38 || 80 }}
     steps:
       - name: Check out protected executor
@@ -401,7 +401,7 @@ jobs:
     name: Protected finalization and zero-residue proof
     if: ${{ always() && needs.deploy-enroll.result != 'skipped' }}
     needs: [authorize, deploy-enroll, arm, execute]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: ${{ inputs.mode == 'retained' && 8 || 20 }}
     environment: image-qualification
     steps:

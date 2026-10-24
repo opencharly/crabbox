@@ -16,6 +16,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ciFleetGuard keeps untrusted fork pull requests off the persistent self-hosted fleet. It is
+// event-aware so push and workflow_dispatch runs are unaffected. Every self-hosted job must
+// carry it; the native Windows/macOS jobs run on GitHub-hosted images and do not.
+const ciFleetGuard = "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository"
+
+const (
+	ciFleetGuardIf                = "${{ " + ciFleetGuard + " }}"
+	ciFleetCancelledGuardIf       = "${{ !cancelled() && (" + ciFleetGuard + ") }}"
+	ciFleetNativeCancelledGuardIf = "${{ !cancelled() && vars.ENABLE_NATIVE_OS_CI == 'true' && (" + ciFleetGuard + ") }}"
+)
+
 func TestCIGoContract(t *testing.T) {
 	if err := checkCIGoContract(readCIGoWorkflow(t)); err != nil {
 		t.Fatal(err)
@@ -193,16 +204,17 @@ func checkCIGoContract(document *yaml.Node) error {
 		ids[id], names[name] = true, true
 	}
 
-	for _, job := range []struct{ id, name string }{
-		{"go-test-core", "Go core"}, {"go-modules", "Go modules"}, {"go-coverage", "Go coverage"}, {"go-coverage-core", "Go non-CLI coverage"}, {"go", "Go"},
+	for _, job := range []struct{ id, name, guard string }{
+		{"go-test-core", "Go core", ciFleetGuardIf}, {"go-modules", "Go modules", ciFleetGuardIf}, {"go-coverage", "Go coverage", ciFleetCancelledGuardIf}, {"go-coverage-core", "Go non-CLI coverage", ciFleetGuardIf}, {"go", "Go", ciFleetCancelledGuardIf},
 	} {
 		node := ciGoJob(document, job.id)
-		keys := []string{"name", "runs-on", "timeout-minutes", "steps"}
+		keys := []string{"name", "if", "runs-on", "timeout-minutes", "steps"}
 		if job.id == "go" || job.id == "go-coverage" {
-			keys = append(keys, "needs", "if")
+			keys = append(keys, "needs")
 		}
 		fields(node, job.id, keys...)
 		require(ciGoScalar(node, "name") == job.name, "%s name changed", job.id)
+		require(ciGoScalar(node, "if") == job.guard, "%s must keep untrusted fork pull requests off the fleet", job.id)
 		require(ciGoScalar(node, "runs-on") == "${{ vars.CI_RUNNER_LABEL || 'opencharly' }}", "%s runner changed", job.id)
 		require(ciGoScalar(node, "timeout-minutes") == "30", "%s must retain its 30-minute cap", job.id)
 		require(ciGoField(node, "steps").Kind == yaml.SequenceNode, "%s steps must be a sequence", job.id)
@@ -290,13 +302,14 @@ func checkCIGoContract(document *yaml.Node) error {
 	}
 	coverageGate := ciGoJob(document, "go-coverage")
 	coverageNeeds := ciGoField(coverageGate, "needs")
-	require(ciGoScalar(coverageGate, "if") == "${{ !cancelled() }}", "coverage gate must evaluate unless the workflow is cancelled")
+	require(ciGoScalar(coverageGate, "if") == ciFleetCancelledGuardIf, "coverage gate must evaluate unless the workflow is cancelled, and only for same-repository PRs")
 	require(coverageNeeds.Kind == yaml.SequenceNode && len(coverageNeeds.Content) == 2, "coverage needs both producers")
 	if len(coverageNeeds.Content) == 2 {
 		require(scalarNodeValue(coverageNeeds.Content[0]) == "go-coverage-core" && scalarNodeValue(coverageNeeds.Content[1]) == "go-coverage-cli", "coverage dependencies changed")
 	}
 	coverageCLI := ciGoJob(document, "go-coverage-cli")
-	fields(coverageCLI, "CLI coverage shards", "name", "runs-on", "timeout-minutes", "strategy", "steps")
+	fields(coverageCLI, "CLI coverage shards", "name", "if", "runs-on", "timeout-minutes", "strategy", "steps")
+	require(ciGoScalar(coverageCLI, "if") == ciFleetGuardIf, "coverage shards must keep untrusted fork pull requests off the fleet")
 	require(ciGoScalar(coverageCLI, "name") == "Go CLI coverage shard ${{ matrix.shard }}" && ciGoScalar(coverageCLI, "runs-on") == "${{ vars.CI_RUNNER_LABEL || 'opencharly' }}" && ciGoScalar(coverageCLI, "timeout-minutes") == "30", "CLI coverage execution changed")
 	coverageStrategy := ciGoField(coverageCLI, "strategy")
 	fields(coverageStrategy, "coverage strategy", "fail-fast", "matrix")
@@ -337,7 +350,7 @@ func checkCIGoContract(document *yaml.Node) error {
 	if len(needs.Content) == 3 {
 		require(scalarNodeValue(needs.Content[0]) == "go-test" && scalarNodeValue(needs.Content[1]) == "go-modules" && scalarNodeValue(needs.Content[2]) == "go-coverage", "Go dependencies changed")
 	}
-	require(ciGoScalar(aggregate, "if") == "${{ !cancelled() }}", "Go must evaluate dependency results unless the workflow is cancelled")
+	require(ciGoScalar(aggregate, "if") == ciFleetCancelledGuardIf, "Go must evaluate dependency results unless the workflow is cancelled, and only for same-repository PRs")
 	steps := ciGoSteps(aggregate)
 	require(len(steps) == 1, "Go must contain only the aggregate Bash step")
 	if len(steps) == 1 {
@@ -359,15 +372,15 @@ func checkCIGoContract(document *yaml.Node) error {
 		}
 	}
 	for _, gate := range []struct {
-		id, name, step, first, second, firstKey, secondKey, script string
+		id, name, step, first, second, firstKey, secondKey, script, guard string
 	}{
-		{"go-test", "Go test", "Require all race shards", "go-test-core", "go-test-cli", "CORE_RESULT", "CLI_RESULT", ciGoRaceGateScript},
-		{"windows-pond-mesh-cancellation", "Windows Pond Mesh Cancellation", "Require all native Windows contracts", "windows-native-contracts", "windows-powershell-architecture", "CONTRACTS_RESULT", "ARCHITECTURE_RESULT", ciWindowsGateScript},
+		{"go-test", "Go test", "Require all race shards", "go-test-core", "go-test-cli", "CORE_RESULT", "CLI_RESULT", ciGoRaceGateScript, ciFleetCancelledGuardIf},
+		{"windows-pond-mesh-cancellation", "Windows Pond Mesh Cancellation", "Require all native Windows contracts", "windows-native-contracts", "windows-powershell-architecture", "CONTRACTS_RESULT", "ARCHITECTURE_RESULT", ciWindowsGateScript, ciFleetNativeCancelledGuardIf},
 	} {
 		node := ciGoJob(document, gate.id)
 		fields(node, gate.id, "name", "needs", "if", "runs-on", "timeout-minutes", "steps")
 		require(ciGoScalar(node, "name") == gate.name, "%s name changed", gate.id)
-		require(ciGoScalar(node, "if") == "${{ !cancelled() }}", "%s must evaluate unless the workflow is cancelled", gate.id)
+		require(ciGoScalar(node, "if") == gate.guard, "%s must evaluate unless the workflow is cancelled, and only for same-repository PRs on the fleet", gate.id)
 		require(ciGoScalar(node, "runs-on") == "${{ vars.CI_RUNNER_LABEL || 'opencharly' }}" && ciGoScalar(node, "timeout-minutes") == "5", "%s execution changed", gate.id)
 		needs := ciGoField(node, "needs")
 		require(needs.Kind == yaml.SequenceNode && len(needs.Content) == 2, "%s needs both workloads", gate.id)
@@ -387,8 +400,9 @@ func checkCIGoContract(document *yaml.Node) error {
 		}
 	}
 	cliJob := ciGoJob(document, "go-test-cli")
-	fields(cliJob, "CLI shards", "name", "runs-on", "timeout-minutes", "strategy", "steps")
+	fields(cliJob, "CLI shards", "name", "if", "runs-on", "timeout-minutes", "strategy", "steps")
 	require(ciGoScalar(cliJob, "name") == "Go CLI shard ${{ matrix.shard }}", "CLI shard names changed")
+	require(ciGoScalar(cliJob, "if") == ciFleetGuardIf, "CLI shards must keep untrusted fork pull requests off the fleet")
 	require(ciGoScalar(cliJob, "runs-on") == "${{ vars.CI_RUNNER_LABEL || 'opencharly' }}" && ciGoScalar(cliJob, "timeout-minutes") == "20", "CLI shard execution changed")
 	strategy := ciGoField(cliJob, "strategy")
 	fields(strategy, "CLI strategy", "fail-fast", "matrix")
@@ -410,6 +424,16 @@ func checkCIGoContract(document *yaml.Node) error {
 		}
 		checkCommand(cliSteps[2], ciGoCommand{name: "Keep restored Go build cache", run: ciGoKeepCacheScript})
 		checkCommand(cliSteps[3], ciGoCommand{name: "Test CLI shard", run: "python3 scripts/test-go-shard.py ${{ matrix.shard }} 4"})
+	}
+	for _, job := range []struct{ id, guard string }{
+		{"go-install", ciFleetGuardIf},
+		{"connector-lifecycles", ciFleetGuardIf},
+		{"worker", ciFleetGuardIf},
+		{"worker-postgres-recovery", ciFleetGuardIf},
+		{"scripts", ciFleetGuardIf},
+		{"docs", ciFleetGuardIf},
+	} {
+		require(ciGoScalar(ciGoJob(document, job.id), "if") == job.guard, "%s must keep untrusted fork pull requests off the fleet", job.id)
 	}
 	return errors.Join(findings...)
 }
@@ -729,6 +753,33 @@ func TestCIGoContractRejectsMutations(t *testing.T) {
 		}},
 		{"logging after predicate", func(d *yaml.Node) {
 			ciGoField(ciGoSteps(ciGoJob(d, "go"))[0], "run").Value += "echo done\n"
+		}},
+		{"go-test-core admits untrusted fork code to the fleet", func(d *yaml.Node) {
+			ciGoDelete(t, ciGoJob(d, "go-test-core"), "if")
+		}},
+		{"go-install admits untrusted fork code to the fleet", func(d *yaml.Node) {
+			ciGoDelete(t, ciGoJob(d, "go-install"), "if")
+		}},
+		{"worker admits untrusted fork code to the fleet", func(d *yaml.Node) {
+			ciGoDelete(t, ciGoJob(d, "worker"), "if")
+		}},
+		{"worker-postgres-recovery admits untrusted fork code to the fleet", func(d *yaml.Node) {
+			ciGoDelete(t, ciGoJob(d, "worker-postgres-recovery"), "if")
+		}},
+		{"connector-lifecycles admits untrusted fork code to the fleet", func(d *yaml.Node) {
+			ciGoDelete(t, ciGoJob(d, "connector-lifecycles"), "if")
+		}},
+		{"scripts admits untrusted fork code to the fleet", func(d *yaml.Node) {
+			ciGoDelete(t, ciGoJob(d, "scripts"), "if")
+		}},
+		{"docs admits untrusted fork code to the fleet", func(d *yaml.Node) {
+			ciGoDelete(t, ciGoJob(d, "docs"), "if")
+		}},
+		{"go-test-core weakens the fork guard", func(d *yaml.Node) {
+			ciGoSet(t, ciGoJob(d, "go-test-core"), "if", "${{ !cancelled() }}")
+		}},
+		{"windows gate drops the fork guard", func(d *yaml.Node) {
+			ciGoSet(t, ciGoJob(d, "windows-pond-mesh-cancellation"), "if", "${{ !cancelled() && vars.ENABLE_NATIVE_OS_CI == 'true' }}")
 		}},
 	}
 	for _, binding := range []string{"GO_TEST_RESULT", "GO_MODULES_RESULT", "GO_COVERAGE_RESULT"} {

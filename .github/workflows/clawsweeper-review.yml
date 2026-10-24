@@ -1,0 +1,65 @@
+# ClawSweeper review — the ADVISORY half of this repo's PR validation.
+#
+# One line of policy: the engine, the image pin, the model endpoint and the comment format
+# all live in opencharly/.github's reusable workflow (R2). This file names the event, the
+# PR, the ref and the ONE secret.
+#
+# ADVISORY ONLY — it is not a required check and can never block a merge. The required gate
+# is `validate / validate` (pr-validator.yml). `clawsweeper-dispatch.yml` stays disabled; this
+# caller is the repo's only ClawSweeper entry point.
+#
+# PINNED BY COMMIT, not `@main`: this repo's own `workflow action references are immutable`
+# test requires a full SHA, and a branch ref would give any future change on that branch this
+# repo's secrets.
+#
+# ONE SECRET, named. `secrets: inherit` would hand the called workflow EVERY secret this repo
+# has, including the auto-merge app key; the review needs exactly one.
+#
+# PRs THAT CAN ACTUALLY RUN IT. The trigger is `pull_request`, so GitHub withholds secrets and
+# grants a read-only token in two cases: a PR from a fork, and a Dependabot PR (whose AUTHOR is
+# `dependabot[bot]` and whose head repo IS this repository, so only the author identifies it).
+# In both, the org-internal image pull and the comment post cannot succeed. Rather than pretend,
+# the job is gated off for both; the advisory review simply does not run there, and the required
+# gate still does.
+name: ClawSweeper review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# ONE REVIEW PER PR HEAD. Every push fires `synchronize`, so several runs can be in flight;
+# without this the SLOWEST one wins the comment and a stale head's review can overwrite a
+# newer one. Cancelling the superseded run is what makes the comment always describe the
+# current head. GitHub applies workflow-level concurrency itself — it is NOT a job-token
+# permission — so no `actions: write` scope is granted here (pr-validator.yml does the same,
+# and the called workflow declares no actions scope and makes no Actions API calls).
+concurrency:
+  group: clawsweeper-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # Declared because the reusable workflow declares it; the comment and the labels both go
+  # through the issues API and are covered by issues: write.
+  pull-requests: write
+  # The advisory labels live on issues: clawsweeper:reviewed / clawsweeper:needs-attention.
+  issues: write
+  # The review image is an org-internal GHCR package; a called workflow can hold only what
+  # its caller grants.
+  packages: read
+
+jobs:
+  review:
+    # A fork PR and a Dependabot PR both arrive without secrets and with a read-only token, so
+    # neither can pull the org-internal image or post the comment. The repo test catches forks;
+    # for Dependabot it must be `pull_request.user.login`, NOT `github.actor`: `actor` is who
+    # TRIGGERED the event, so a maintainer REOPENING a Dependabot PR changes the actor and would
+    # slip past an actor test — while `user.login` stays `dependabot[bot]`.
+    if: >-
+      ${{ github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.user.login != 'dependabot[bot]' }}
+    uses: opencharly/.github/.github/workflows/clawsweeper-review.yml@a1f021d1b050148bf34f6412ff9ce9c1bf74317b
+    with:
+      pr-number: ${{ github.event.pull_request.number }}
+    secrets:
+      AI_REVIEW_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}

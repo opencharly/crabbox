@@ -87,14 +87,14 @@ test("SSH localhost asserts amd64 only on its hosted x64 lifecycle row", () => {
 test("container matrix rows select the Docker fleet through the org variable", () => {
   for (const name of ["firecracker-readiness", "ssh-localhost"]) {
     const block = workflow.match(
-      new RegExp(`- name: ${name}\\n([\\s\\S]*?)(?=\\n {10}- name:)`),
+      new RegExp(`- name: ${name}\\n([\\s\\S]*?)(?=\\n {10}- name:|$)`),
     )?.[1];
     assert.ok(block, `${name} row exists`);
     assert.ok(block.includes("runner: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}"), `${name} uses the exact general runner expression`);
   }
   for (const name of ["docker-sandbox-trust-boundary", "local-container", "containerd"]) {
     const block = workflow.match(
-      new RegExp(`- name: ${name}\\n([\\s\\S]*?)(?=\\n {10}- name:)`),
+      new RegExp(`- name: ${name}\\n([\\s\\S]*?)(?=\\n {10}- name:|$)`),
     )?.[1];
     assert.ok(block, `${name} row exists`);
     assert.ok(block.includes("runner: ${{ vars.CI_DOCKER_RUNNER_LABEL || 'opencharly-ubuntu' }}"), `${name} uses the exact Docker runner expression`);

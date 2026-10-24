@@ -31,7 +31,10 @@ permissions:
 jobs:
   verify:
     name: Verify pinned Canonical source
-    runs-on: ubuntu-latest
+    # Same-repository PRs only: this job checks out and runs the PR's own verifier on the
+    # persistent fleet. Fork PRs must not execute their code there; the job is a visible skip.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 5
     steps:
       - name: Check out

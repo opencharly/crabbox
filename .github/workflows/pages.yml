@@ -27,7 +27,7 @@ concurrency:
 jobs:
   build:
     name: Build docs
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 10
     steps:
       - name: Check out
@@ -56,7 +56,7 @@ jobs:
 
   deploy:
     name: Deploy docs
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 10
     needs: build
     environment:

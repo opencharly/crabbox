@@ -13,7 +13,7 @@ concurrency:
 jobs:
   guard:
     name: Guard protected verification
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 5
     steps:
       - name: Require the protected default-branch workflow
@@ -36,7 +36,7 @@ jobs:
   verify:
     name: Verify existing publisher admin access
     needs: guard
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 5
     environment: image-publisher
     steps:

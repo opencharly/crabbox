@@ -14,7 +14,7 @@ concurrency:
 jobs:
   guard:
     name: Guard protected canary
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 5
     steps:
       - name: Require the protected default-branch workflow
@@ -37,7 +37,7 @@ jobs:
   canary:
     name: Audit maintenance and run Daytona
     needs: guard
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'opencharly' }}
     timeout-minutes: 45
     environment: image-publisher
     env:
