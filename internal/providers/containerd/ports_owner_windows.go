@@ -25,6 +25,10 @@ func lockForwardOwner(_ string) (func(), error) {
 	return nil, forwardPublishingSupported()
 }
 
+func forwardControlDir() (string, error) {
+	return "", forwardPublishingSupported()
+}
+
 func signalForwardOwnerProcess(_ int) error {
 	return forwardPublishingSupported()
 }

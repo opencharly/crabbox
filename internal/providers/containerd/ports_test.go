@@ -61,6 +61,28 @@ func (r *liveSSHRunner) recorded() []core.LocalCommandRequest {
 
 func (r *liveSSHRunner) crash() { close(r.exit) }
 
+// stubbornRunner keeps its ssh child alive even after the owner cancels it, so
+// a teardown timeout can be exercised deterministically.
+type stubbornRunner struct {
+	release chan struct{}
+}
+
+func (r *stubbornRunner) Run(ctx context.Context, req core.LocalCommandRequest) (core.LocalCommandResult, error) {
+	if req.Name == "ssh" && findArg(req.Args, "-N") {
+		<-r.release
+		return core.LocalCommandResult{ExitCode: 1}, errors.New("ssh exited")
+	}
+	joined := strings.Join(req.Args, " ")
+	if strings.Contains(joined, "namespace") {
+		return core.LocalCommandResult{Stdout: "default\n"}, nil
+	}
+	if strings.Contains(joined, "nerdctl") && strings.Contains(joined, "info") {
+		output, err := jsonInfo(daemonInfo{ID: "daemon-id", Namespace: "default"})
+		return core.LocalCommandResult{Stdout: output}, err
+	}
+	return core.LocalCommandResult{}, nil
+}
+
 func TestParsePublishSpec(t *testing.T) {
 	for _, tc := range []struct {
 		spec          string
@@ -128,6 +150,7 @@ func TestPublishListAndUnpublishOwnOneForward(t *testing.T) {
 			ContainerPort: containerPort,
 			LocalPort:     requestedLocal,
 			OwnerPID:      os.Getpid(),
+			Control:       "control-under-test.sock",
 			Host:          "127.0.0.1",
 			HostScope:     "local",
 			CreatedAt:     time.Now().UTC(),
@@ -137,9 +160,9 @@ func TestPublishListAndUnpublishOwnOneForward(t *testing.T) {
 		spawned++
 		return os.Getpid(), make(chan error), nil
 	}
-	b.stopOwner = func(pid int) error {
-		if pid != os.Getpid() {
-			t.Fatalf("stopped pid %d, want the recorded owner %d", pid, os.Getpid())
+	b.requestStop = func(control string) error {
+		if control != "control-under-test.sock" {
+			t.Fatalf("stop request went to %q, want the record's control socket", control)
 		}
 		if release != nil {
 			release()
@@ -364,6 +387,10 @@ func TestForwardOwnerRemovesTheRecordWhenTheSSHChildExits(t *testing.T) {
 	})
 	b.loopbackPort = func() (string, error) { return "41000", nil }
 	b.dialPort = func(string, time.Duration) (net.Conn, error) { return &readableConn{}, nil }
+	b.waitSSH = func(context.Context, *core.SSHTarget, io.Writer, string, time.Duration) error {
+		t.Fatal("the local owner path must not run a real SSH probe")
+		return nil
+	}
 
 	done := make(chan error, 1)
 	go func() {
@@ -403,6 +430,10 @@ func TestForwardOwnerRemovesTheRecordOnCancellation(t *testing.T) {
 	})
 	b.loopbackPort = func() (string, error) { return "41000", nil }
 	b.dialPort = func(string, time.Duration) (net.Conn, error) { return &readableConn{}, nil }
+	b.waitSSH = func(context.Context, *core.SSHTarget, io.Writer, string, time.Duration) error {
+		t.Fatal("the local owner path must not run a real SSH probe")
+		return nil
+	}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -443,12 +474,15 @@ func TestReapPublishedForwardsStopsTheOwnerAndRemovesState(t *testing.T) {
 	}
 	if err := writeForwardRecord(recordPath, publishedForward{
 		LeaseID: leaseID, ContainerPort: 3000, LocalPort: 41000, OwnerPID: 111,
-		Host: "127.0.0.1", HostScope: "local", CreatedAt: time.Now().UTC(),
+		Control: "control-under-test.sock", Host: "127.0.0.1", HostScope: "local", CreatedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	stopped := 0
-	b.stopOwner = func(pid int) error {
+	b.requestStop = func(control string) error {
+		if control != "control-under-test.sock" {
+			t.Fatalf("stop request went to %q", control)
+		}
 		stopped++
 		release()
 		return nil
@@ -486,12 +520,12 @@ func TestUnpublishLeavesAForwardReownedDuringStop(t *testing.T) {
 	}
 	if err := writeForwardRecord(recordPath, publishedForward{
 		LeaseID: leaseID, ContainerPort: 3000, LocalPort: 41000, OwnerPID: 111,
-		Host: "127.0.0.1", HostScope: "local", CreatedAt: time.Now().UTC(),
+		Control: "stale-control.sock", Host: "127.0.0.1", HostScope: "local", CreatedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	var newRelease func()
-	b.stopOwner = func(pid int) error {
+	b.requestStop = func(control string) error {
 		oldRelease()
 		release, err := lockForwardOwner(lockPath)
 		if err != nil {
@@ -500,7 +534,7 @@ func TestUnpublishLeavesAForwardReownedDuringStop(t *testing.T) {
 		newRelease = release
 		return writeForwardRecord(recordPath, publishedForward{
 			LeaseID: leaseID, ContainerPort: 3000, LocalPort: 41001, OwnerPID: 222,
-			Host: "127.0.0.1", HostScope: "local", CreatedAt: time.Now().UTC(),
+			Control: "new-control.sock", Host: "127.0.0.1", HostScope: "local", CreatedAt: time.Now().UTC(),
 		})
 	}
 	defer func() {
@@ -519,6 +553,132 @@ func TestUnpublishLeavesAForwardReownedDuringStop(t *testing.T) {
 	}
 	if !ok || record.OwnerPID != 222 {
 		t.Fatalf("the new owner's record was not preserved: ok=%v record=%+v", ok, record)
+	}
+}
+
+// Block 1 of the round-2 review: a record that was re-owned BEFORE the stop
+// starts must not reach the old control endpoint or be removed.
+func TestUnpublishDoesNotTouchAReownedRecordBeforeStopping(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	const leaseID = "cbx_0123456789ab"
+	b := testBackend(&recordingRunner{})
+	recordPath, err := forwardRecordPath(leaseID, 3000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(recordPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	newRelease, err := lockForwardOwner(forwardLockPathFor(recordPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer newRelease()
+	if err := writeForwardRecord(recordPath, publishedForward{
+		LeaseID: leaseID, ContainerPort: 3000, LocalPort: 41001, OwnerPID: 222,
+		Control: "new-control.sock", Host: "127.0.0.1", HostScope: "local", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	requested := false
+	b.requestStop = func(string) error { requested = true; return nil }
+	stale := publishedForward{LeaseID: leaseID, ContainerPort: 3000, LocalPort: 41000, OwnerPID: 111, Control: "old-control.sock"}
+	err = b.stopPublishedForwardOwner(t.Context(), leaseID, stale)
+	if err == nil || !strings.Contains(err.Error(), "re-owned") {
+		t.Fatalf("err=%v want the re-owned refusal", err)
+	}
+	if requested {
+		t.Fatal("a stop was requested for a record that had already been re-owned")
+	}
+	record, ok, err := readForwardRecord(recordPath)
+	if err != nil || !ok || record.OwnerPID != 222 {
+		t.Fatalf("the new owner's record was not preserved: ok=%v record=%+v err=%v", ok, record, err)
+	}
+}
+
+// Block 2 of the round-2 review: a teardown that cannot be proven retains a
+// failed record, and the caller reports it while the listener is still up.
+func TestForwardOwnerRetainsAFailedRecord(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	const leaseID = "cbx_0123456789ab"
+	runner := &stubbornRunner{release: make(chan struct{})}
+	b := testBackendWithRunner(runner)
+	b.remember(core.LeaseTarget{
+		LeaseID: leaseID,
+		Server:  core.Server{Name: "crabbox-test-00000000"},
+		SSH:     core.SSHTarget{User: "crabbox", Host: "127.0.0.1", Port: "2222"},
+	})
+	b.loopbackPort = func() (string, error) { return "41000", nil }
+	b.dialPort = func(string, time.Duration) (net.Conn, error) { return &readableConn{}, nil }
+	b.waitSSH = func(context.Context, *core.SSHTarget, io.Writer, string, time.Duration) error {
+		t.Fatal("the local owner path must not run a real SSH probe")
+		return nil
+	}
+	b.stopTimeout = 50 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Ports(ctx, core.PortsRequest{ID: leaseID, ForwardOwnerSpec: "3000"})
+		done <- err
+	}()
+	recordPath, err := forwardRecordPath(leaseID, 3000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitForwardRecordOrExit(t, recordPath, done)
+	cancel()
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "could not stop") {
+		t.Fatalf("err=%v want the teardown failure", err)
+	}
+	record, ok, err := readForwardRecord(recordPath)
+	if err != nil || !ok {
+		t.Fatalf("the failed record was not retained: ok=%v err=%v", ok, err)
+	}
+	if record.Status != "failed" || record.TeardownError == "" {
+		t.Fatalf("record=%+v want status=failed with a teardown error", record)
+	}
+	close(runner.release)
+}
+
+func TestUnpublishRetainsAFailedRecordWhileTheListenerIsUp(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	const leaseID = "cbx_0123456789ab"
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	b := testBackend(&recordingRunner{})
+	b.remember(core.LeaseTarget{LeaseID: leaseID, Server: core.Server{Name: "crabbox-test-00000000"}})
+	recordPath, err := forwardRecordPath(leaseID, 3000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(recordPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeForwardRecord(recordPath, publishedForward{
+		LeaseID: leaseID, ContainerPort: 3000, LocalPort: port, OwnerPID: 111,
+		Control: "gone.sock", Status: "failed", TeardownError: "the ssh child survived",
+		Host: "127.0.0.1", HostScope: "local", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Ports(t.Context(), core.PortsRequest{ID: leaseID, Unpublish: []string{"3000"}}); err == nil || !strings.Contains(err.Error(), "could not be torn down") {
+		t.Fatalf("err=%v want the retained-failure refusal", err)
+	}
+	if _, err := os.Stat(recordPath); err != nil {
+		t.Fatalf("the failed record was removed while the listener was up: %v", err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Ports(t.Context(), core.PortsRequest{ID: leaseID, Unpublish: []string{"3000"}}); err != nil {
+		t.Fatalf("a verified-dead failed forward should clear: %v", err)
+	}
+	if _, err := os.Stat(recordPath); !os.IsNotExist(err) {
+		t.Fatalf("the verified-dead failed record was not removed: %v", err)
 	}
 }
 

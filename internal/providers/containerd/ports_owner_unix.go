@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"syscall"
 
 	core "github.com/openclaw/crabbox/internal/cli"
@@ -60,6 +62,14 @@ func lockForwardOwner(path string) (func(), error) {
 		return nil, core.Exit(2, "another forward owner already holds %s", path)
 	}
 	return release, nil
+}
+
+// forwardControlDir is the short-lived rendezvous directory for per-owner stop
+// sockets. It lives under the operator's temp dir so the socket path stays well
+// inside the unix socket length limit, and it is per-uid so other users cannot
+// connect to an owner.
+func forwardControlDir() (string, error) {
+	return filepath.Join(os.TempDir(), "crabbox-forward-"+strconv.Itoa(os.Getuid())), nil
 }
 
 // signalForwardOwnerProcess asks the owner to tear its forward down. The owner

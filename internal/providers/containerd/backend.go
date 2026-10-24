@@ -39,8 +39,10 @@ type backend struct {
 
 	// publish seams are injectable so the forward-owner lifecycle is testable
 	// without forking a real helper.
-	spawnOwner spawnForwardOwnerFunc
-	stopOwner  stopForwardOwnerFunc
+	spawnOwner     spawnForwardOwnerFunc
+	requestStop    stopForwardOwnerFunc
+	terminateOwner func(pid int) error
+	stopTimeout    time.Duration
 }
 
 // forwardKey names one owned SSH forward. A lease has at most one lease tunnel

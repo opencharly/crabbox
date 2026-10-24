@@ -156,10 +156,13 @@ is the same in both modes:
   connects to the operator-side end of the lease tunnel the provider already
   established, so the remote host's loopback is never probed from here.
 
-`--unpublish` stops the owner and removes its record; `crabbox stop` reaps every
-forward a lease still owns before removing the container. A record whose owner
-lock is free is stale and is removed rather than reported, so a recycled pid is
-never signalled.
+`--unpublish` asks the owner to stop through its own private control socket and
+removes its record; `crabbox stop` reaps every forward a lease still owns before
+removing the container. A pid is never signalled, so a recycled pid cannot be
+hit. A record whose owner lock is free is stale and is removed rather than
+reported, except a record left by a teardown that could not be proven: that one
+is retained as `failed`, reported by `ports`, and cleared by `--unpublish` only
+once nothing is listening on its operator-side port.
 
 `--expose <port>` at lease creation remains the alternative: `nerdctl` publishes
 that port on the daemon's loopback when the container starts, `crabbox ports`

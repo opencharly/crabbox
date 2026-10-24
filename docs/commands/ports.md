@@ -80,7 +80,9 @@ runs `ssh -L 127.0.0.1:LOCAL_PORT:127.0.0.1:CONTAINER_PORT` over the lease's SSH
 endpoint and records its pid and an advisory lock under the Crabbox state
 directory. The owner outlives the `ports` command, `--unpublish` stops it, and
 `crabbox stop` reaps any forward the lease still owns. `ports` lists live
-forwards beside the `nerdctl port` mappings.
+forwards beside the `nerdctl port` mappings. If a forward's teardown cannot be
+proven, its record is retained and reported as failed rather than deleted;
+`--unpublish` clears it once nothing is listening on its operator-side port.
 
 The port lives **inside the lease**, never on the operator's loopback. On a
 remote containerd host the forward rides the same SSH tunnel the lease already
