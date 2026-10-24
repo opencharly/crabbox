@@ -75,7 +75,8 @@ A native checkpoint captures a VM or container's disk state at the provider leve
 - Lives in the provider account and incurs storage cost until deleted.
 - Supported on brokered AWS Linux/macOS leases, brokered Azure/GCP Linux leases,
   direct AWS Linux/macOS and Hetzner Linux leases, Parallels (local or remote
-  Mac) clones, and direct Docker and Incus Linux containers.
+  Mac) clones, direct Docker and Incus Linux containers, and containerd
+  (rootful or rootless) leases.
 
 ### Archive (workspace tarball)
 
@@ -100,7 +101,7 @@ archive path, so `auto` selects its container snapshot.
 
 ## Native strategies
 
-Native checkpoints use one of two provider primitives, selected with
+Native checkpoints use one of three provider primitives, selected with
 `--strategy`:
 
 **`disk-snapshot`** — the default the auto strategy normalizes to.
@@ -133,10 +134,50 @@ loopback-only TightVNC credentials.
 | AWS | `aws-ami` |
 | Azure | `azure-managed-image` |
 | GCP | `gcp-machine-image` |
+| containerd | `containerd-commit` (opt in with `--mode native`; `auto` keeps the archive default) |
 
 Images are slower to create but preserve complete launch configuration. Direct
 AWS Linux/macOS leases use the AMI path for native checkpoints because AMIs fork
 directly without a coordinator.
+
+**`process`** — opt in with `--strategy process`; currently the `containerd`
+provider only.
+
+| Provider | Kind |
+| --- | --- |
+| containerd (rootful, `runc`) | `containerd-criu` |
+
+A process checkpoint is a CRIU dump of the container's task — processes, memory
+and namespaces — taken with `nerdctl checkpoint create --leave-running`, so the
+source keeps running. The writable layer is **not** captured and is **not**
+rolled back: restoring a process checkpoint returns the process tree, not the
+files, so changes written after the capture remain. Before capturing, the
+provider requires all three of:
+
+- `criu check --unprivileged --feature seccomp_suspend` on the containerd host
+  to exit 0 **and** print `seccomp_suspend is supported` on either stream. The
+  bulk `--extra` form is never used because it returns non-zero on hosts that
+  checkpoint fine.
+- the runtime's `restore --help` to mention `no-subreaper`: containerd passes
+  `-no-subreaper` when it restores, and `crun` rejects that flag with exit 64,
+  so only `runc` can consume a checkpoint this seam creates.
+- a rootful daemon with `runtime: runc` and `containerd.criu: on` (or `auto`). Rootless
+  daemons, `criu: in-container`, and the krun in-guest path are refused with the
+  mechanism named.
+
+Restore is bound to the lease and container the checkpoint was taken from: it
+stops the container (preserving its writable layer), closes Crabbox's
+multiplexed SSH sessions, and runs `start --checkpoint`, keeping the lease id,
+claim, SSH key and published ports. A zombie `STOPPED` task is refused and
+reported instead of forcing the restore. `checkpoint delete` proves the recorded
+daemon scope and the lease-derived checkpoint name before removing it, and
+lease release removes the lease's own process checkpoints **before** the
+container they are scoped to.
+
+`crabbox checkpoint fork` refuses a `containerd-criu` record with the mechanism:
+a CRIU dump is bound to its source container's task and network namespace and
+cannot start a different lease. Capture `--strategy image` when the checkpoint
+must be forkable.
 
 **Hetzner notes.** Direct Hetzner Linux leases with a numeric server ID support
 `--mode native` and create a project snapshot. `--strategy image` is not
@@ -159,10 +200,38 @@ inventoried as the source lease and replaces the mount-dependent bootstrap
 command with a persistent default command. The Docker context, context-store
 path, resolved daemon endpoint, and Docker system ID used at create time are
 recorded and validated so verify and delete fail closed if that context or
-daemon is later replaced. Native checkpoints are currently Docker-only; Podman
-and nerdctl leases keep using workspace archives. Crabbox rejects native
-checkpoint creation when the workspace is stored in a mounted volume because
-`docker commit` does not capture mounted data.
+daemon is later replaced. Podman leases keep using workspace archives; the
+`containerd` provider has its own `containerd-commit` primitive below. Crabbox
+rejects native checkpoint creation when the workspace is stored in a mounted
+volume because `docker commit` does not capture mounted data.
+
+**`containerd-commit`** — the `containerd` provider's native primitive (opt in
+with `--mode native` or `--strategy image`; `auto` keeps the workspace-archive
+default). It captures the lease root filesystem with `nerdctl commit` and clones
+the lease's state volume (`/var`) into a checkpoint-owned volume, so both the
+image and the mutable state are captured. The committed image is tagged
+`crabbox-checkpoint-<name>-<checkpoint-id>` and its identity is the immutable
+image digest. A running source is emptied of `/etc/machine-id` and paused for
+the commit, then unpaused and restored whatever the outcome; a stopped source is
+captured cold, with the empty machine-id produced in a derived image. The image
+must provide GNU `cp`: busybox `cp` drops `trusted.overlay.*` xattrs and would
+corrupt an overlayfs state volume, so the capture refuses it before touching the
+source. `nerdctl commit` supports `CMD`/`ENTRYPOINT` changes only, so the
+capture replaces the mount-dependent bootstrap command with a persistent `CMD`
+and never writes a `LABEL` change; committed images inherit no lease labels.
+`crabbox checkpoint inspect <id> --verify` (or `checkpoint list --verify`)
+confirms the tag still resolves to the recorded digest, and `crabbox checkpoint
+delete <id>` removes that tag plus the checkpoint's state-volume clone. The
+daemon id, host, namespace, runtime, snapshotter and rootless mode are recorded;
+verify, delete, fork and restore fail closed with exit 7 if the daemon scope
+changes. Fork starts a fresh lease from the image and clones the captured state
+volume into the new lease's volume, re-applying fresh lease labels and the
+readiness hook; the host volumes present at capture time are recorded and
+replayed. Restore (`crabbox checkpoint restore <id> --id <lease>`) is bound to
+the lease the checkpoint was taken from (a different lease exits 7 before any
+daemon call), keeps the lease id, claim, SSH key and published ports, re-clones
+the state volume, recreates the container, and reports convergence after the
+readiness hook.
 
 `crabbox checkpoint fork <id>` starts a fresh local-container lease from the
 checkpoint image, then relocates the saved workspace into the new lease path.

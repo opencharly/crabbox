@@ -23,28 +23,31 @@ import (
 )
 
 const (
-	checkpointIDPrefix         = "chk_"
-	checkpointMetaFile         = "checkpoint.json"
-	checkpointArchive          = "workspace.tar.gz"
-	checkpointKindRecipe       = "recipe"
-	checkpointKindArchive      = "workspace-archive"
-	checkpointKindAWSAMI       = "aws-ami"
-	checkpointKindAWSEBS       = "aws-ebs-snapshot"
-	checkpointKindAzure        = "azure-managed-image"
-	checkpointKindAzureOS      = "azure-os-disk-snapshot"
-	checkpointKindGCP          = "gcp-machine-image"
-	checkpointKindGCPDisk      = "gcp-disk-snapshot"
-	checkpointKindHetzner      = "hetzner-snapshot"
-	checkpointKindMachine0     = "machine0-image"
-	checkpointKindParallels    = "parallels-snapshot"
-	checkpointKindDockerCommit = "docker-commit"
-	checkpointKindDaytona      = "daytona-snapshot"
-	checkpointKindIncus        = "incus-image"
-	checkpointKindCloudflare   = "cloudflare-container-snapshot"
+	checkpointIDPrefix             = "chk_"
+	checkpointMetaFile             = "checkpoint.json"
+	checkpointArchive              = "workspace.tar.gz"
+	checkpointKindRecipe           = "recipe"
+	checkpointKindArchive          = "workspace-archive"
+	checkpointKindAWSAMI           = "aws-ami"
+	checkpointKindAWSEBS           = "aws-ebs-snapshot"
+	checkpointKindAzure            = "azure-managed-image"
+	checkpointKindAzureOS          = "azure-os-disk-snapshot"
+	checkpointKindGCP              = "gcp-machine-image"
+	checkpointKindGCPDisk          = "gcp-disk-snapshot"
+	checkpointKindHetzner          = "hetzner-snapshot"
+	checkpointKindMachine0         = "machine0-image"
+	checkpointKindParallels        = "parallels-snapshot"
+	checkpointKindDockerCommit     = "docker-commit"
+	checkpointKindContainerdCommit = "containerd-commit"
+	checkpointKindContainerdCRIU   = "containerd-criu"
+	checkpointKindDaytona          = "daytona-snapshot"
+	checkpointKindIncus            = "incus-image"
+	checkpointKindCloudflare       = "cloudflare-container-snapshot"
 
 	checkpointStrategyAuto         = "auto"
 	checkpointStrategyImage        = "image"
 	checkpointStrategyDiskSnapshot = "disk-snapshot"
+	checkpointStrategyProcess      = "process"
 )
 
 type checkpointRecord struct {
@@ -118,7 +121,7 @@ func (a App) checkpointCreate(ctx context.Context, args []string) (err error) {
 	prepareOnly := fs.Bool("prepare-only", false, "check source retirement admission without creating a checkpoint or changing the source")
 	discardFailed := fs.Bool("discard-failed", false, "discard a verified failed image and finish its requested source retirement")
 	mode := fs.String("mode", "auto", "checkpoint mode: auto, native, or archive")
-	strategy := fs.String("strategy", checkpointStrategyAuto, "native checkpoint strategy: auto, disk-snapshot, or image")
+	strategy := fs.String("strategy", checkpointStrategyAuto, "native checkpoint strategy: auto, process, disk-snapshot, or image")
 	workdirOverride := fs.String("workdir", "", "remote workdir to archive")
 	recipeOnly := fs.Bool("recipe-only", false, "record metadata without archiving the remote workdir")
 	jsonOut := fs.Bool("json", false, "print the checkpoint record as JSON")
@@ -273,7 +276,7 @@ func (a App) checkpointCreate(ctx context.Context, args []string) (err error) {
 		return err
 	}
 	switch createKind {
-	case checkpointKindRecipe, checkpointKindAWSAMI, checkpointKindAWSEBS, checkpointKindAzure, checkpointKindAzureOS, checkpointKindGCP, checkpointKindGCPDisk, checkpointKindHetzner, checkpointKindMachine0, checkpointKindParallels, checkpointKindDockerCommit, checkpointKindDaytona, checkpointKindIncus, checkpointKindCloudflare, checkpointKindArchive:
+	case checkpointKindRecipe, checkpointKindAWSAMI, checkpointKindAWSEBS, checkpointKindAzure, checkpointKindAzureOS, checkpointKindGCP, checkpointKindGCPDisk, checkpointKindHetzner, checkpointKindMachine0, checkpointKindParallels, checkpointKindDockerCommit, checkpointKindContainerdCommit, checkpointKindDaytona, checkpointKindIncus, checkpointKindCloudflare, checkpointKindArchive:
 		record.Kind = createKind
 	default:
 		return Exit(2, "checkpoint mode must be auto, native, or archive")
@@ -323,7 +326,7 @@ func (a App) checkpointCreate(ctx context.Context, args []string) (err error) {
 		}()
 		switch createKind {
 		case checkpointKindRecipe:
-		case checkpointKindAWSAMI, checkpointKindAWSEBS, checkpointKindAzure, checkpointKindAzureOS, checkpointKindGCP, checkpointKindGCPDisk, checkpointKindHetzner, checkpointKindMachine0, checkpointKindParallels, checkpointKindDockerCommit, checkpointKindDaytona, checkpointKindIncus, checkpointKindCloudflare:
+		case checkpointKindAWSAMI, checkpointKindAWSEBS, checkpointKindAzure, checkpointKindAzureOS, checkpointKindGCP, checkpointKindGCPDisk, checkpointKindHetzner, checkpointKindMachine0, checkpointKindParallels, checkpointKindDockerCommit, checkpointKindContainerdCommit, checkpointKindContainerdCRIU, checkpointKindDaytona, checkpointKindIncus, checkpointKindCloudflare:
 			createStrategy := checkpointCreateStrategy(*mode, *strategy, createKind)
 			retention := checkpointRetentionFromDuration(retentionDuration)
 			createContext := withCheckpointCreateContext(ctx, record, retention, func(managed bool) error {
@@ -1144,6 +1147,46 @@ func (a App) checkpointRestore(ctx context.Context, args []string) error {
 					return err
 				}
 				fmt.Fprintf(a.Stdout, "checkpoint restored id=%s lease=%s snapshot=%s\n", record.ID, blank(server.Labels["lease"], server.CloudID), record.Native.ImageID)
+				return nil
+			}
+			if restorer, ok := nativeCheckpointRestoreProvider(record); ok {
+				cfg, err := loadLeaseTargetConfig(fs, *provider, targetFlags, networkFlags, leaseTargetConfigOptions{LeaseID: *id})
+				if err != nil {
+					return err
+				}
+				if err := requireLeaseID(*id, "crabbox checkpoint restore <checkpoint-id> --id <lease-id-or-slug>", cfg); err != nil {
+					return err
+				}
+				repo, err := findRepo()
+				if err != nil {
+					return err
+				}
+				if *dryRun {
+					fmt.Fprintf(a.Stdout, "would restore checkpoint id=%s lease=%s kind=%s\n", record.ID, *id, record.Kind)
+					return nil
+				}
+				server, target, leaseID, err := a.resolveNetworkLeaseTargetForRepoWithConfig(ctx, &cfg, *id, true, *reclaim)
+				if err != nil {
+					return err
+				}
+				if err := a.claimResolvedLeaseTargetForRepoAndRegister(ctx, leaseID, ServerSlug(server), cfg, &server, target, repo.Root, *reclaim); err != nil {
+					return err
+				}
+				result, err := restorer.RestoreNativeCheckpoint(ctx, NativeCheckpointRestoreRequest{
+					Config: cfg, Server: server, Target: target, LeaseID: leaseID, RepoName: repo.Name,
+					Workdir: firstNonBlank(*workdirOverride, record.Workdir),
+					Record: NativeCheckpointRestoreRecord{
+						Kind: record.Kind, ImageID: record.Native.ImageID, Name: record.Native.Name,
+						Resource: record.Native.Resource, Metadata: record.Native.Metadata,
+					},
+				})
+				if err != nil {
+					return err
+				}
+				if err := recordCheckpointUse(store, &record); err != nil {
+					return err
+				}
+				fmt.Fprintf(a.Stdout, "checkpoint restored id=%s lease=%s converged=%t %s\n", record.ID, leaseID, result.Converged, result.Message)
 				return nil
 			}
 			if record.Kind == checkpointKindDockerCommit {
@@ -2809,6 +2852,11 @@ func NormalizeCheckpointStrategy(strategy string) string {
 		return checkpointStrategyImage
 	case checkpointStrategyDiskSnapshot, "disk_snapshot":
 		return checkpointStrategyDiskSnapshot
+	case checkpointStrategyProcess:
+		// A process checkpoint is a live CRIU capture, not an image or a disk
+		// snapshot; folding it into disk-snapshot would silently offer the wrong
+		// primitive on providers that cannot produce it.
+		return checkpointStrategyProcess
 	default:
 		return checkpointStrategyDiskSnapshot
 	}
@@ -2829,7 +2877,7 @@ func checkpointCreateStrategy(mode, strategy, kind string) string {
 
 func validCheckpointStrategy(strategy string) bool {
 	switch strings.ToLower(strings.TrimSpace(strategy)) {
-	case "", checkpointStrategyAuto, checkpointStrategyDiskSnapshot, checkpointStrategyImage, "snapshot", "disk", "ami", "machine-image", "managed-image", "disk_snapshot":
+	case "", checkpointStrategyAuto, checkpointStrategyDiskSnapshot, checkpointStrategyImage, checkpointStrategyProcess, "snapshot", "disk", "ami", "machine-image", "managed-image", "disk_snapshot":
 		return true
 	default:
 		return false
@@ -2857,7 +2905,7 @@ func nativeCheckpointForkWorkdir(cfg Config, leaseID, repoName, override string)
 }
 
 func isNativeCheckpointKind(kind string) bool {
-	return kind == checkpointKindAWSAMI || kind == checkpointKindAWSEBS || kind == checkpointKindAzure || kind == checkpointKindAzureOS || kind == checkpointKindGCP || kind == checkpointKindGCPDisk || kind == checkpointKindHetzner || kind == checkpointKindMachine0 || kind == checkpointKindParallels || kind == checkpointKindDockerCommit || kind == checkpointKindDaytona || kind == checkpointKindIncus || kind == checkpointKindCloudflare
+	return kind == checkpointKindAWSAMI || kind == checkpointKindAWSEBS || kind == checkpointKindAzure || kind == checkpointKindAzureOS || kind == checkpointKindGCP || kind == checkpointKindGCPDisk || kind == checkpointKindHetzner || kind == checkpointKindMachine0 || kind == checkpointKindParallels || kind == checkpointKindDockerCommit || kind == checkpointKindContainerdCommit || kind == checkpointKindContainerdCRIU || kind == checkpointKindDaytona || kind == checkpointKindIncus || kind == checkpointKindCloudflare
 }
 
 func checkpointProviderForKind(kind string) string {
@@ -2876,6 +2924,8 @@ func checkpointProviderForKind(kind string) string {
 		return "parallels"
 	case checkpointKindDockerCommit:
 		return "local-container"
+	case checkpointKindContainerdCommit, checkpointKindContainerdCRIU:
+		return "containerd"
 	case checkpointKindDaytona:
 		return "daytona"
 	case checkpointKindIncus:
@@ -3091,9 +3141,12 @@ const (
 	CheckpointKindMachine0         = checkpointKindMachine0
 	CheckpointKindParallels        = checkpointKindParallels
 	CheckpointKindDockerCommit     = checkpointKindDockerCommit
+	CheckpointKindContainerdCommit = checkpointKindContainerdCommit
+	CheckpointKindContainerdCRIU   = checkpointKindContainerdCRIU
 	CheckpointKindDaytona          = checkpointKindDaytona
 	CheckpointKindIncus            = checkpointKindIncus
 	CheckpointKindCloudflare       = checkpointKindCloudflare
 	CheckpointStrategyImage        = checkpointStrategyImage
 	CheckpointStrategyDiskSnapshot = checkpointStrategyDiskSnapshot
+	CheckpointStrategyProcess      = checkpointStrategyProcess
 )

@@ -2,11 +2,12 @@ package localcontainer
 
 import (
 	"flag"
-	"github.com/openclaw/crabbox/internal/providers/shared"
 	"path/filepath"
 	"strings"
 
 	core "github.com/openclaw/crabbox/internal/cli"
+	"github.com/openclaw/crabbox/internal/providers/shared"
+	"github.com/openclaw/crabbox/internal/providers/shared/containercheckpoint"
 )
 
 func init() {
@@ -150,7 +151,7 @@ func (Provider) ApplyNativeCheckpointForkConfig(req core.NativeCheckpointForkReq
 	if imageID == "" {
 		return core.Exit(2, "local-container checkpoint fork requires a committed image id")
 	}
-	imageName := strings.TrimSpace(firstCheckpointValue(req.Record.Name, req.Record.Resource))
+	imageName := strings.TrimSpace(containercheckpoint.FirstValue(req.Record.Name, req.Record.Resource))
 	if imageName == "" {
 		return core.Exit(2, "local-container checkpoint fork requires a committed image tag")
 	}

@@ -65,6 +65,9 @@ func (b *backend) Acquire(ctx context.Context, req core.AcquireRequest) (core.Le
 	if err != nil {
 		return core.LeaseTarget{}, err
 	}
+	if err := validateCheckpointForkScope(ctx, b.runner(), cfg, info); err != nil {
+		return core.LeaseTarget{}, err
+	}
 	if err := b.refuseUnsupportedImageProfile(ctx); err != nil {
 		return core.LeaseTarget{}, err
 	}
@@ -133,6 +136,11 @@ func (b *backend) Acquire(ctx context.Context, req core.AcquireRequest) (core.Le
 		if stateVolume != "" {
 			_ = b.removeVolume(context.WithoutCancel(ctx), stateVolume)
 		}
+	}
+	// A checkpoint fork starts from the captured state volume, not an empty one.
+	if err := b.cloneCheckpointState(ctx, cfg, stateVolume); err != nil {
+		rollback()
+		return core.LeaseTarget{}, err
 	}
 	result, err := b.runner().run(ctx, args, nil, b.rt.Stderr)
 	containerID := strings.TrimSpace(result.Stdout)
@@ -266,6 +274,9 @@ func (b *backend) leaseFromClaim(ctx context.Context, claim core.LeaseClaim, pre
 	target.Port = strconv.Itoa(claim.SSHPort)
 	target.User = b.cfg.Containerd.User
 	target.Key = ""
+	// A resolved lease waits on the same readiness contract as an acquired one;
+	// this target is built here rather than by sshTargetForPort.
+	target = checkpointReadyTarget(b.cfg, target)
 	if err := core.UseStoredTestboxKey(&target, claim.LeaseID); err != nil {
 		return core.LeaseTarget{}, err
 	}
@@ -444,6 +455,13 @@ func (b *backend) ReleaseLease(ctx context.Context, req core.ReleaseLeaseRequest
 	if name == "" {
 		name = core.LeaseProviderName(lease.LeaseID, lease.Server.Labels["slug"])
 	}
+	// A process checkpoint is scoped to its container under the nerdctl data
+	// root: removing the container first leaves it unreachable. Delete the
+	// lease's own checkpoints before the container, and only names derived from
+	// this lease (ownership proof).
+	if err := b.removeOwnedProcessCheckpoints(ctx, lease.LeaseID, name); err != nil {
+		return err
+	}
 	if err := b.stopContainer(ctx, lease, name); err != nil {
 		return err
 	}
@@ -521,11 +539,7 @@ func (b *backend) containerListed(ctx context.Context, name string) (bool, error
 }
 
 func (b *backend) removeVolume(ctx context.Context, volume string) error {
-	result, err := b.runner().nerdctlOutput(ctx, "volume", "rm", "--force", volume)
-	if err != nil && !strings.Contains(strings.ToLower(result.Stderr+err.Error()), "no such volume") {
-		return shared.LocalCommandError("nerdctl volume rm", result, err)
-	}
-	return nil
+	return checkpointRemoveVolume(ctx, b.runner(), volume)
 }
 
 func containerNotFound(result core.LocalCommandResult) bool {
@@ -859,9 +873,11 @@ func (b *backend) Doctor(ctx context.Context, req core.DoctorRequest) (core.Doct
 	case "auto":
 		add("skip", "criu", "containerd.criu=auto narrows to off because the automatic pre-flight belongs to the checkpoint seam; set in-container or on to opt in")
 	default:
-		result, err := runner.runShell(ctx, "criu check --unprivileged --feature seccomp_suspend 2>&1", nil, nil)
-		if err != nil || !strings.Contains(result.Stdout, "seccomp_suspend is supported") {
-			add("failed", "criu", "criu check --unprivileged --feature seccomp_suspend did not report `seccomp_suspend is supported`; install a CRIU that supports the seccomp feature and run the probe on the containerd host")
+		// One probe implementation with the checkpoint seam: rc 0 AND the
+		// supported line, on either stream, and never the bulk --extra form.
+		output, rc, err := checkpointCRIUProbe(ctx, runner)
+		if !checkpointCRIUProbeOK(rc, err, output) {
+			add("failed", "criu", "criu check --unprivileged --feature seccomp_suspend did not exit 0 and report `seccomp_suspend is supported` (rc="+strconv.Itoa(rc)+"); install a CRIU that supports the seccomp feature on the containerd host")
 		} else {
 			add("ok", "criu", "criu check rc=0 and seccomp_suspend is supported")
 		}
@@ -920,6 +936,29 @@ func shortID(id string) string {
 
 // ---- SSH target, port allocation, forwarding, and the readiness hook ----
 
+// leaseReadyCheck is the readiness contract for a containerd lease: the work
+// root the container bootstrap creates. It is deliberately NOT the
+// prepared-image marker /usr/local/bin/crabbox-ready — a stock OCI image never
+// ships that marker, and this provider's bootstrap execs sshd only AFTER it
+// created and chowned the work root, so a writable work root proves the
+// bootstrap finished. Without it the generic probe waits for a file a stock
+// lease can never have until the readiness deadline. An image that needs deeper
+// readiness still ships the optional /usr/local/libexec/crabbox/ready hook,
+// which runs after SSH readiness (CONTAINERD-IMAGES.md §2.1).
+func leaseReadyCheck(workRoot string) string {
+	return "test -w " + core.ShellQuote(workRoot)
+}
+
+// checkpointReadyTarget applies leaseReadyCheck to a target that did not come
+// through sshTargetForPort (a restore receives the lease target from the CLI).
+// An existing ReadyCheck is never overwritten.
+func checkpointReadyTarget(cfg core.Config, target core.SSHTarget) core.SSHTarget {
+	if strings.TrimSpace(target.ReadyCheck) == "" {
+		target.ReadyCheck = leaseReadyCheck(cfg.Containerd.WorkRoot)
+	}
+	return target
+}
+
 func (b *backend) sshTargetForPort(ctx context.Context, leaseID, hostPort string) (core.SSHTarget, error) {
 	target := core.SSHTargetFromConfig(b.cfg, "127.0.0.1")
 	target.TargetOS = core.TargetLinux
@@ -928,6 +967,7 @@ func (b *backend) sshTargetForPort(ctx context.Context, leaseID, hostPort string
 	// SSH user.
 	target.User = b.cfg.Containerd.User
 	target.Key = ""
+	target = checkpointReadyTarget(b.cfg, target)
 	if err := core.UseStoredTestboxKey(&target, leaseID); err != nil {
 		return core.SSHTarget{}, err
 	}
@@ -1073,6 +1113,13 @@ func (b *backend) runOverLeaseSSH(ctx context.Context, lease core.LeaseTarget, s
 // runOverTarget executes one command over the lease SSH target. It is the only
 // path for guest commands; nerdctl exec is never used (krun has no exec).
 func (b *backend) runOverTarget(ctx context.Context, target core.SSHTarget, script string, stdin *strings.Reader) (core.LocalCommandResult, error) {
+	return runOverSSHTarget(ctx, b.rt, target, script, stdin)
+}
+
+// runOverSSHTarget is the provider-operation entry point to the same contract:
+// checkpoint capture runs on Provider rather than an Acquire-configured
+// Backend, so it supplies the standard runtime explicitly.
+func runOverSSHTarget(ctx context.Context, rt core.Runtime, target core.SSHTarget, script string, stdin *strings.Reader) (core.LocalCommandResult, error) {
 	args := []string{
 		"-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=accept-new",
@@ -1089,7 +1136,7 @@ func (b *backend) runOverTarget(ctx context.Context, target core.SSHTarget, scri
 	if stdin != nil {
 		req.Stdin = stdin
 	}
-	return b.rt.Exec.Run(ctx, req)
+	return rt.Exec.Run(ctx, req)
 }
 
 // verifySeccompProfile proves the narrow profile exists before a browser or

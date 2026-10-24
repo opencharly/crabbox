@@ -52,9 +52,28 @@ install_verified_apt_keyring() {
 
 const BrowserInstallScript = `
 if [ "${CRABBOX_BROWSER:-0}" = "1" ] && command -v apt-get >/dev/null 2>&1; then
+  # A version check alone accepts a browser that cannot launch (missing
+  # libraries, no sandbox). Prove a headless render instead. The bootstrap runs
+  # as root, and Chromium refuses to start as root with its sandbox enabled;
+  # the relaxation is confined to this one-shot probe and never reaches the
+  # lease browser wrapper, which keeps its sandbox.
+  browser_can_run_headless() {
+    probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/crabbox-browser-probe.XXXXXX")"
+    case "$(basename "$1")" in
+      firefox*|iceweasel*)
+        "$1" --headless --screenshot "$probe_dir/probe.png" about:blank >/dev/null 2>&1
+        ;;
+      *)
+        "$1" --headless --disable-gpu --disable-dev-shm-usage --no-sandbox --dump-dom about:blank >/dev/null 2>&1
+        ;;
+    esac
+    probe_status=$?
+    rm -rf "$probe_dir"
+    return $probe_status
+  }
   has_working_browser() {
     for candidate in google-chrome chromium firefox-esr firefox; do
-      if candidate_path="$(command -v "$candidate" 2>/dev/null)" && "$candidate_path" --version >/dev/null 2>&1; then
+      if candidate_path="$(command -v "$candidate" 2>/dev/null)" && "$candidate_path" --version >/dev/null 2>&1 && browser_can_run_headless "$candidate_path"; then
         return 0
       fi
     done
@@ -260,7 +279,15 @@ if [ "${CRABBOX_DOCKER_SOCKET:-0}" = "1" ] && ! command -v docker >/dev/null 2>&
     echo "Docker APT signing key verification unavailable; falling back to distro Docker CLI" >&2
   fi
   if [ "$install_docker_cli" != "1" ]; then
-    apt-get install -y --no-install-recommends docker.io
+    # docker-cli is the client-only package on newer distros; docker.io still
+    # supplies it on releases that do not publish the split package.
+    if ! apt-get install -y --no-install-recommends docker.io docker-cli; then
+      if ! apt-get install -y --no-install-recommends docker.io; then
+        echo "Docker-compatible socket requested but neither docker.io nor docker-cli is available from this distro; use a Debian/Ubuntu-compatible image or preinstall docker" >&2
+        exit 127
+      fi
+      echo "docker-cli is not published by this distro; docker.io supplied the Docker CLI" >&2
+    fi
   fi
 fi
 if [ "${CRABBOX_DOCKER_SOCKET:-0}" = "1" ] && ! command -v docker >/dev/null 2>&1; then
@@ -585,6 +612,20 @@ if [ "${CRABBOX_BROWSER:-0}" = "1" ]; then
   printf 'CHROME_BIN=%s\nBROWSER=%s\n' "$browser_wrapper" "$browser_wrapper" > /var/lib/crabbox/browser.env
   chown "$user" /var/lib/crabbox/browser.env
   chmod 0644 /var/lib/crabbox/browser.env
+fi
+if [ "${CRABBOX_INIT_MODE:-direct}" = "systemd" ] && [ -d /run/systemd/system ]; then
+  # Under a systemd image the unit that runs this script owns the process
+  # lifetime. Starting sshd and returning is the ending; replacing PID 1 here
+  # would kill the image init and every unit it supervises.
+  sshd_started=0
+  if command -v systemctl >/dev/null 2>&1 &&
+    { systemctl start ssh.service >/dev/null 2>&1 || systemctl start sshd.service >/dev/null 2>&1; }; then
+    sshd_started=1
+  fi
+  if [ "$sshd_started" != "1" ]; then
+    /usr/sbin/sshd -e -p "$ssh_port"
+  fi
+  exit 0
 fi
 exec /usr/sbin/sshd -D -e -p "$ssh_port"
 `

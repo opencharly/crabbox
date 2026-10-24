@@ -246,17 +246,6 @@ esac
 	}
 }
 
-func TestCheckpointImageNameNormalizesAndBoundsRepository(t *testing.T) {
-	got := checkpointImageName("___", "sha256:ABCDEF0123456789")
-	if got != "crabbox-checkpoint-checkpoint-abcdef012345" {
-		t.Fatalf("punctuation-only name=%q", got)
-	}
-	got = checkpointImageName(strings.Repeat("A_", 300), "sha256:ABCDEF0123456789")
-	if len(got) > 255 || got != strings.ToLower(got) {
-		t.Fatalf("invalid repository name=%q length=%d", got, len(got))
-	}
-}
-
 func TestCheckpointMountIntersectingWorkdir(t *testing.T) {
 	mounts := []checkpointMount{{Destination: "/cache"}, {Destination: "/work/shared"}}
 	for _, tc := range []struct {
@@ -287,29 +276,12 @@ func TestCheckpointRollbackContextOutlivesRequestCancellation(t *testing.T) {
 	}
 }
 
-func TestParseCheckpointImageIDIgnoresNonDigestOutput(t *testing.T) {
-	got, err := parseCheckpointImageID("warning\nsha256:ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789" {
-		t.Fatalf("image id=%q", got)
-	}
-}
-
 func TestCheckpointResetLeaseLabelsClearsOwnershipSelectors(t *testing.T) {
 	change := checkpointResetLeaseLabelsChange()
 	for _, key := range []string{"crabbox", "provider", "lease", "slug", "keep", "expires_at", "fixed_intent_sha256"} {
 		if !strings.Contains(change, ` `+key+`=""`) {
 			t.Fatalf("label reset missing %s", key)
 		}
-	}
-}
-
-func TestCheckpointBootableCommandDoesNotReferenceBootstrapMount(t *testing.T) {
-	change := checkpointBootableCommandChange()
-	if strings.Contains(change, "crabbox-bootstrap") || !strings.HasPrefix(change, "CMD ") {
-		t.Fatalf("invalid checkpoint command change: %q", change)
 	}
 }
 

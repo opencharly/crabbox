@@ -20,9 +20,9 @@ type Provider struct{}
 // credentials, clients, or lifecycle methods are touched.
 func (Provider) BackendCapabilities() core.Backend { return &backend{spec: Provider{}.Spec()} }
 
-// Spec is stable, configuration-free metadata. Native checkpoint, fork and
-// restore features are added by the checkpoint seam; declaring them here while
-// no checkpoint lifecycle exists would be a false capability claim.
+// Spec is stable, configuration-free metadata. The checkpoint, fork and
+// restore features are declared here because the checkpoint seam implements
+// their full lifecycle (containerd-commit).
 func (Provider) Spec() core.ProviderSpec {
 	return core.ProviderSpec{
 		Authentication: core.ProviderAuthentication{ // fresh slices on every call
@@ -39,13 +39,12 @@ func (Provider) Spec() core.ProviderSpec {
 			},
 		},
 		Name:    providerName,
-		Aliases: []string{"nerdctl"},
-		Family:  "container",
 		Kind:    core.ProviderKindSSHLease,
 		Targets: []core.TargetSpec{{OS: core.TargetLinux}},
 		Features: core.FeatureSet{
 			core.FeatureSSH, core.FeatureCrabboxSync, core.FeatureCleanup, core.FeatureRunSession,
 			core.FeatureCacheVolume,
+			core.FeatureCheckpoint, core.FeatureFork, core.FeatureRestore,
 			core.FeatureDesktop, core.FeatureBrowser, core.FeatureCode, core.FeatureTailscale,
 			core.FeaturePauseResume, core.FeatureClaimExec, core.FeatureFixedCurrentRepoStop,
 		},
@@ -145,8 +144,72 @@ func (Provider) ConfigShowSection(cfg core.Config) core.ProviderConfigShowSectio
 	}
 }
 
+// preparedImageFeatures names the prepared runner image that carries each
+// optional capability. The base SSH contract runs on any Linux image, but
+// desktop, browser, code and tailscale live in the prepared image's layers
+// (CONTAINERD-IMAGES.md), so they are admitted only when that image is
+// configured.
+var preparedImageFeatures = map[core.Feature]string{
+	core.FeatureDesktop:   "pod-crabbox-desktop",
+	core.FeatureBrowser:   "pod-crabbox-browser",
+	core.FeatureCode:      "pod-crabbox-code",
+	core.FeatureTailscale: "pod-crabbox-tailscale",
+}
+
+// ConfiguredFeatures narrows the static catalog to what the configured image
+// can actually serve. It reads only configuration: it never probes the daemon
+// or the image, so it is usable before a lease exists.
 func (Provider) ConfiguredFeatures(cfg core.Config) core.FeatureSet {
-	return Provider{}.Spec().Features
+	spec := Provider{}.Spec()
+	features := make(core.FeatureSet, 0, len(spec.Features))
+	for _, feature := range spec.Features {
+		image, gated := preparedImageFeatures[feature]
+		if gated && !configuredImageServes(cfg.Containerd.Image, image) {
+			continue
+		}
+		features = append(features, feature)
+	}
+	return features
+}
+
+// configuredImageServes reports whether the configured OCI reference names the
+// prepared image. The reference may carry a registry, a port, a tag and a
+// digest; only the final path segment is compared.
+func configuredImageServes(reference, prepared string) bool {
+	ref := reference
+	if at := strings.Index(ref, "@"); at >= 0 {
+		ref = ref[:at]
+	}
+	if slash, colon := strings.LastIndex(ref, "/"), strings.LastIndex(ref, ":"); colon > slash {
+		ref = ref[:colon]
+	}
+	if slash := strings.LastIndex(ref, "/"); slash >= 0 {
+		ref = ref[slash+1:]
+	}
+	return ref == prepared
+}
+
+// validatePreparedImages refuses a requested feature the configured image
+// cannot serve, before any daemon call, and names the image that can.
+func validatePreparedImages(cfg core.Config) error {
+	requested := []struct {
+		flag    string
+		on      bool
+		feature core.Feature
+	}{
+		{"--desktop", cfg.Desktop, core.FeatureDesktop},
+		{"--browser", cfg.Browser, core.FeatureBrowser},
+		{"--code", cfg.Code, core.FeatureCode},
+		{"--tailscale", cfg.Tailscale.Enabled, core.FeatureTailscale},
+	}
+	configured := Provider{}.ConfiguredFeatures(cfg)
+	for _, req := range requested {
+		if !req.on || configured.Has(req.feature) {
+			continue
+		}
+		return core.Exit(2, "provider=%s cannot serve %s with containerd.image %q; set containerd.image to the prepared image ghcr.io/opencharly/%s, which carries that capability", providerName, req.flag, cfg.Containerd.Image, preparedImageFeatures[req.feature])
+	}
+	return nil
 }
 
 // ValidateRequestedCapabilities refuses only measured real limits, and each
@@ -208,6 +271,9 @@ func validateConfigEnums(cfg core.Config) error {
 
 func validateRequestedCapabilities(cfg core.Config) error {
 	c := cfg.Containerd
+	if err := validatePreparedImages(cfg); err != nil {
+		return err
+	}
 	krun := c.Runtime == "krun"
 	if (cfg.Actions.Workflow != "" || len(cfg.Actions.RunnerLabels) > 0) && c.InitMode == "direct" {
 		return core.Exit(2, "an Actions runner installs a systemd unit inside the lease, but containerd.initMode=direct runs the bootstrap script as PID 1; set containerd.initMode: systemd (the image init owns the unit)")

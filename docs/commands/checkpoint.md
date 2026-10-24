@@ -84,6 +84,9 @@ crabbox checkpoint create --id swift-crab --mode archive
 # Prefer a full image over a disk snapshot
 crabbox checkpoint create --id swift-crab --strategy image
 
+# Process checkpoint (CRIU) on a rootful containerd lease with runtime: runc
+crabbox checkpoint create --provider containerd --id swift-crab --strategy process
+
 # Direct AWS lease (no coordinator): force a native AMI
 crabbox checkpoint create --provider aws --id swift-crab --mode native
 
@@ -116,8 +119,10 @@ crabbox checkpoint create --id swift-crab --mode native --json
 --provider <name>           Provider hint when the lease is not yet claimed.
 --name <name>               Human-readable checkpoint name.
 --mode auto|native|archive  Checkpoint mode (default auto).
---strategy auto|disk-snapshot|image
+--strategy auto|process|disk-snapshot|image
                             Native checkpoint strategy (default auto).
+                            process captures a live CRIU task dump
+                            (containerd, rootful runc only).
 --wait                      Wait for the native snapshot to become available
                             (default true).
 --wait-timeout <duration>   Maximum native snapshot wait (default 45m).
@@ -230,7 +235,11 @@ calls, and emit no receipt.
 `--mode` also accepts the aliases `provider-native`/`vm` (native),
 `ami`/`image` (image), `snapshot`/`disk`/`disk-snapshot` (disk snapshot),
 `workspace`/`workspace-archive` (archive), and `recipe`. `--strategy auto`
-resolves to a disk snapshot where the provider supports one.
+resolves to a disk snapshot where the provider supports one. `--strategy
+process` selects the `containerd-criu` process primitive; on any other provider
+no native primitive matches, so `--mode auto` keeps the workspace archive and
+`--mode native` is refused (never silently reinterpreted as an image or disk
+snapshot).
 Retention defaults to manual. Explicit expiry rejects direct, archive, recipe,
 and unsupported checkpoints before any checkpoint resource mutation; an older
 coordinator returns an upgrade diagnostic instead of silently creating an unmanaged
@@ -564,8 +573,12 @@ crabbox checkpoint restore --provider parallels --parallels-template tahoe-lates
 ```
 
 An archive restore uploads the tarball over SSH and extracts it into the
-workdir. Restoring a non-archive, non-Parallels native checkpoint is an error
-that points you at `checkpoint fork`.
+workdir. A `containerd-commit` restore runs in place: it keeps the lease id,
+claim, SSH key and published ports, re-clones the checkpoint's state volume,
+recreates the container from the committed image, waits for the readiness hook,
+and reports `converged=true` with the convergence evidence. Restoring any other
+non-archive, non-Parallels native checkpoint is an error that points you at
+`checkpoint fork`.
 
 ## fork
 
@@ -840,6 +853,18 @@ See [Checkpoints](../features/checkpoints.md#lifecycle-and-expiry).
 | Incus Linux containers (direct only, `--mode native`) | Private root-disk image | Same snapshot-to-image capture |
 | Parallels | VM snapshot | — |
 | Cloudflare containers | Container filesystem snapshot | not supported |
+
+`--strategy process` is offered only by the `containerd` provider, for a
+rootful daemon with `runtime: runc` and `containerd.criu: on` (or `auto`). It
+creates a `containerd-criu` record: a CRIU dump of the running task, with the
+writable layer left untouched. Creation requires the host pre-flight `criu
+check --unprivileged --feature seccomp_suspend` to exit 0 and report
+`seccomp_suspend is supported`, and requires the runtime's `restore --help` to
+accept `no-subreaper` (crun rejects it with exit 64; create runs the same
+probe, so crun is refused before capture). Restore rewinds the process tree into the same container with `start
+--checkpoint`, does not roll back the writable layer, and refuses a zombie
+`STOPPED` task. Fork is refused: the dump is bound to its task and network
+namespace. See [Checkpoints](../features/checkpoints.md#native-strategies).
 
 Brokered native checkpoints (through a configured coordinator) cover AWS
 Linux/macOS and Azure/GCP Linux leases. Azure Windows leases use the direct

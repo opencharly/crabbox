@@ -756,6 +756,45 @@ type NativeCheckpointForkProvider interface {
 	ApplyNativeCheckpointForkConfig(req NativeCheckpointForkRequest) error
 }
 
+// NativeCheckpointRestoreRecord is the durable identity a restore needs. It is
+// deliberately narrower than a fork record: a restore replaces the state of an
+// existing lease, so nothing about lease allocation is in play.
+type NativeCheckpointRestoreRecord struct {
+	Kind     string
+	ImageID  string
+	Name     string
+	Resource string
+	Metadata map[string]string
+}
+
+// NativeCheckpointRestoreRequest restores a committed native checkpoint into
+// the lease it was taken from. The lease id, its claim, and its SSH key are
+// preserved; the provider replaces whatever it captured as mutable state.
+type NativeCheckpointRestoreRequest struct {
+	Config   Config
+	Server   Server
+	Target   SSHTarget
+	Record   NativeCheckpointRestoreRecord
+	LeaseID  string
+	RepoName string
+	Workdir  string
+}
+
+// NativeCheckpointRestoreResult reports what the provider did. Converged means
+// the lease is serving again from the checkpoint; Message names the concrete
+// convergence evidence (container, state volume, readiness).
+type NativeCheckpointRestoreResult struct {
+	Converged bool
+	Message   string
+}
+
+// NativeCheckpointRestoreProvider restores a checkpoint in place. Providers
+// whose checkpoint is an immutable image only (no mutable state to replace)
+// omit the interface, and core keeps its kind-specific refusal.
+type NativeCheckpointRestoreProvider interface {
+	RestoreNativeCheckpoint(ctx context.Context, req NativeCheckpointRestoreRequest) (NativeCheckpointRestoreResult, error)
+}
+
 // DelegatedCheckpointBackend lets a delegated-run backend, which exposes no SSH
 // target, create and fork native checkpoints. Its provider still implements
 // NativeCheckpointProvider and NativeCheckpointLifecycleProvider.

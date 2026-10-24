@@ -2412,7 +2412,10 @@ if ! { ` + seed + `; } >/dev/null 2>"$transport_error"; then
   exit ` + strconv.Itoa(gitOriginRuntimeFallbackExitCode) + `
 fi
 printf 'crabbox-git-seed phase=checkout\n' >&2
-` + checkoutGit + ` -C "$tmp" checkout --quiet --detach ` + shellQuote(plan.Target) + `
+if ! { ` + checkoutGit + ` -C "$tmp" checkout --quiet --detach ` + shellQuote(plan.Target) + `; } >/dev/null 2>"$transport_error"; then
+  cat "$transport_error" >&2
+  exit ` + strconv.Itoa(gitSeedCheckoutFailureExitCode) + `
+fi
 printf 'crabbox-git-seed phase=verify\n' >&2
 [ "$(git -C "$tmp" rev-parse --verify HEAD^{commit})" = ` + shellQuote(plan.Target) + ` ]
 cd "$tmp"
