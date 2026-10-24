@@ -1,0 +1,15 @@
+[Unit]
+Description=krun guest boot proof
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/krun-proof
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=0
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
