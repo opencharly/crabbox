@@ -480,6 +480,13 @@ type PortsRequest struct {
 	Publish   []string
 	Unpublish []string
 	JSON      bool
+
+	// ForwardOwnerSpec is set only in the detached helper process a provider
+	// spawns to own one published forward. Every operator invocation leaves it
+	// empty; ports() fills it from the helper's private environment, and a
+	// provider that forwards ports runs as the owner instead of spawning a
+	// second one. The owner chooses and records the operator-side port.
+	ForwardOwnerSpec string
 }
 
 type CopyRequest struct {

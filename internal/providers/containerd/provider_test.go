@@ -60,9 +60,17 @@ func testBackend(runner *recordingRunner) *backend {
 		spec:     Provider{}.Spec(),
 		cfg:      cfg,
 		rt:       core.Runtime{Exec: runner, Stderr: &strings.Builder{}},
-		forwards: map[string]*sshForward{},
+		forwards: map[forwardKey]*sshForward{},
 		acquired: map[string]core.LeaseTarget{},
 	}
+}
+
+// testBackendWithRunner builds the same backend over any CommandRunner, so a
+// test can model a long-lived ssh child instead of an instant return.
+func testBackendWithRunner(runner core.CommandRunner) *backend {
+	b := testBackend(&recordingRunner{})
+	b.rt.Exec = runner
+	return b
 }
 
 func findArg(args []string, want ...string) bool {

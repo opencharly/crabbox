@@ -101,6 +101,22 @@ func (r commandRunner) remoteArgv(remote string) []string {
 // remoteForwardArgv builds the local-to-remote tunnel that publishes the
 // container's SSH port on the operator's loopback.
 func (r commandRunner) remoteForwardArgv(localPort, remotePort string) []string {
+	c := r.cfg.Containerd
+	return r.forwardArgv(c.SSHHost, c.SSHPort, c.SSHKey, c.SSHUser, localPort, remotePort)
+}
+
+// leaseForwardArgv builds the local forward that reaches a port INSIDE the
+// lease: the destination is the lease's SSH endpoint, which in remote mode is
+// already the operator-side end of the lease tunnel, so the forward never
+// probes or addresses the remote host's loopback directly.
+func (r commandRunner) leaseForwardArgv(target core.SSHTarget, localPort, containerPort string) []string {
+	return r.forwardArgv(target.Host, target.Port, target.Key, target.User, localPort, containerPort)
+}
+
+// forwardArgv is the one SSH -L argv builder. Every forward this provider owns
+// (the lease tunnel and a published container port) is the same mechanism with a
+// different destination.
+func (r commandRunner) forwardArgv(host, port, key, user, localPort, remotePort string) []string {
 	args := []string{
 		"-N",
 		"-o", "BatchMode=yes",
@@ -108,19 +124,18 @@ func (r commandRunner) remoteForwardArgv(localPort, remotePort string) []string 
 		"-o", "ConnectTimeout=10",
 		"-o", "ExitOnForwardFailure=yes",
 	}
-	if port := strings.TrimSpace(r.cfg.Containerd.SSHPort); port != "" && port != "22" {
+	if port = strings.TrimSpace(port); port != "" && port != "22" {
 		args = append(args, "-p", port)
 	}
-	if key := strings.TrimSpace(r.cfg.Containerd.SSHKey); key != "" {
+	if key = strings.TrimSpace(key); key != "" {
 		args = append(args, "-i", key, "-o", "IdentitiesOnly=yes")
 	}
-	user := strings.TrimSpace(r.cfg.Containerd.SSHUser)
-	if user == "" {
+	if user = strings.TrimSpace(user); user == "" {
 		user = "root"
 	}
 	return append(args,
 		"-L", "127.0.0.1:"+localPort+":127.0.0.1:"+remotePort,
-		user+"@"+r.cfg.Containerd.SSHHost,
+		user+"@"+host,
 	)
 }
 

@@ -5,10 +5,24 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"os"
 	"strings"
 )
 
+// PortsForwardOwnerSpecEnv is the private environment a provider uses to
+// re-enter its own binary as the detached owner of one published forward. It is
+// never documented and never set by an operator; ports() only forwards it into
+// PortsRequest.
+const PortsForwardOwnerSpecEnv = "CRABBOX_INTERNAL_PORTS_FORWARD_SPEC"
+
+// portsForwardOwnerFromEnv reads the helper-only environment. A provider sets
+// it on the child it re-execs; an operator invocation has no value.
+func portsForwardOwnerFromEnv() (spec string) {
+	return strings.TrimSpace(os.Getenv(PortsForwardOwnerSpecEnv))
+}
+
 func (a App) ports(ctx context.Context, args []string) error {
+	ownerSpec := portsForwardOwnerFromEnv()
 	defaults := defaultConfig()
 	fs := newFlagSet("ports", a.Stderr)
 	provider := registerProviderSelectionFlag(fs, defaults, providerHelpAll())
@@ -44,11 +58,12 @@ func (a App) ports(ctx context.Context, args []string) error {
 		return Exit(2, "provider=%s does not support ports; use a provider with native port publishing", backend.Spec().Name)
 	}
 	output, err := portsBackend.Ports(ctx, PortsRequest{
-		Options:   leaseOptionsFromConfig(cfg),
-		ID:        *id,
-		Publish:   append([]string(nil), publish...),
-		Unpublish: append([]string(nil), unpublish...),
-		JSON:      *jsonOut,
+		Options:          leaseOptionsFromConfig(cfg),
+		ID:               *id,
+		Publish:          append([]string(nil), publish...),
+		Unpublish:        append([]string(nil), unpublish...),
+		JSON:             *jsonOut,
+		ForwardOwnerSpec: ownerSpec,
 	})
 	if err != nil {
 		return err

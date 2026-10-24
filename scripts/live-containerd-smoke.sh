@@ -151,6 +151,82 @@ run_row() {
 run_row "base row: stock image, namespace ${CRABBOX_CONTAINERD_NAMESPACE:-default}" "" \
   sh -c 'echo containerd-live-smoke; uname -s'
 
+# A published forward is owned by a detached helper that outlives the `ports`
+# command. Prove it end to end: sshd answers inside the lease on 2222, so a
+# banner read through the operator-side port proves the forward reached the
+# container (a local listener alone would not), then unpublish must close it.
+publish_row() {
+  local label="port-forward row: publish/list/unpublish"
+  local output lease local_port banner
+  log "$label"
+  if [[ -n "$host_cannot_publish" ]]; then
+    row_skip "$label — $host_cannot_publish"
+    return $?
+  fi
+  if ! output="$("$crabbox" warmup --provider containerd --ttl 10m --idle-timeout 5m 2>&1)"; then
+    lease="$(printf '%s\n' "$output" | grep -Eo 'cbx_[a-f0-9]{12}' | head -1 || true)"
+    if [[ -n "$lease" ]]; then
+      created_leases+=("$lease")
+    fi
+    if portmap_unavailable "$output"; then
+      host_cannot_publish="this host cannot publish the lease SSH port: the CNI portmap plugin needs the xt_multiport kernel extension, which is missing (opencharly/layer-containerd#5)"
+      row_skip "$label — $host_cannot_publish"
+      return $?
+    fi
+    printf '%s\n' "$output" >&2
+    return 1
+  fi
+  printf '%s\n' "$output" >&2
+  lease="$(printf '%s\n' "$output" | grep -Eo 'cbx_[a-f0-9]{12}' | head -1 || true)"
+  if [[ -z "$lease" ]]; then
+    log "fail: warmup printed no lease id"
+    return 1
+  fi
+  created_leases+=("$lease")
+  if ! output="$("$crabbox" ports --provider containerd --id "$lease" --publish 2222 2>&1)"; then
+    printf '%s\n' "$output" >&2
+    return 1
+  fi
+  printf '%s\n' "$output"
+  local_port="$(printf '%s\n' "$output" | sed -n 's/.*127\.0\.0\.1:\([0-9][0-9]*\) -> container:2222.*/\1/p' | head -1)"
+  if [[ -z "$local_port" ]]; then
+    log "fail: --publish printed no operator-side port"
+    return 1
+  fi
+  banner="$(timeout 10 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"${local_port}"'; IFS= read -r -t 5 line <&3; printf "%s" "$line"' 2>/dev/null || true)"
+  if [[ "$banner" != SSH-* ]]; then
+    log "fail: forward on 127.0.0.1:${local_port} did not reach the lease sshd (banner=${banner:-empty})"
+    return 1
+  fi
+  if ! "$crabbox" ports --provider containerd --id "$lease" | grep -q "127.0.0.1:${local_port} -> container:2222"; then
+    log "fail: ports did not list the active forward on 127.0.0.1:${local_port}"
+    return 1
+  fi
+  "$crabbox" ports --provider containerd --id "$lease" --unpublish 2222 >/dev/null
+  if timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"${local_port}" 2>/dev/null; then
+    log "fail: --unpublish left 127.0.0.1:${local_port} listening"
+    return 1
+  fi
+  # Publish again and STOP WITHOUT unpublishing: release must reap the owner.
+  if ! output="$("$crabbox" ports --provider containerd --id "$lease" --publish 2222 2>&1)"; then
+    printf '%s\n' "$output" >&2
+    return 1
+  fi
+  local_port="$(printf '%s\n' "$output" | sed -n 's/.*127\.0\.0\.1:\([0-9][0-9]*\) -> container:2222.*/\1/p' | head -1)"
+  if [[ -z "$local_port" ]]; then
+    log "fail: the release-reap publish printed no operator-side port"
+    return 1
+  fi
+  "$crabbox" stop --provider containerd "$lease" >/dev/null
+  if timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"${local_port}" 2>/dev/null; then
+    log "fail: release left the published forward on 127.0.0.1:${local_port} listening"
+    return 1
+  fi
+  return 0
+}
+
+publish_row
+
 image_row() {
   local repo="$1" ref
   ref="$(nerdctl "${nerdctl_args[@]}" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -m1 -E "^${repo}:" || true)"

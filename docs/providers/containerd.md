@@ -127,6 +127,50 @@ below need the named image because the capability lives in its layers.
 | gpu `virtio` (krun) | `krun.gpu_flags` annotation; never `--device /dev/dri` | `pod-crabbox-gpu` |
 | checkpoints (`containerd-commit`), fork, restore | `nerdctl commit` of the root filesystem plus a state-volume clone; a running source is paused and `/etc/machine-id` is emptied (restored afterwards); GNU `cp` required | any image with GNU coreutils; `pod-crabbox-k3s` for the k3s snapshot/restore use case |
 | process checkpoints (`containerd-criu`, `--strategy process`) | CRIU dump of the live task with `nerdctl checkpoint create --leave-running`; requires `criu`, a rootful daemon, and `runtime: runc` for restore | any image; `pod-crabbox-criu` for a prepared CRIU host |
+| published ports (`ports --publish`) | owns a detached `ssh -L` forward to a container port; `--unpublish` stops it and release reaps it | any image |
+
+## Published ports
+
+`nerdctl` cannot add a published port to a running container, so
+`crabbox ports --publish` does not ask it to. It starts a detached owner process
+that runs `ssh -L 127.0.0.1:<local>:127.0.0.1:<container-port>` over the lease's
+SSH endpoint, records its pid and an advisory lock under the Crabbox state
+directory, and outlives the command that created it.
+
+```sh
+crabbox ports --provider containerd --id warm-crab --publish 3000
+crabbox ports --provider containerd --id warm-crab --publish 41000:3000
+crabbox ports --provider containerd --id warm-crab
+crabbox ports --provider containerd --id warm-crab --unpublish 3000
+```
+
+The spec is `[LOCAL_PORT:]CONTAINER_PORT`; omitting the local port allocates a
+free operator-side loopback port and prints it. `--publish` refuses a port
+nothing accepts inside the lease, naming the lease side and the containerd host
+(it runs the forward end to end before recording it). The forwarding mechanism
+is the same in both modes:
+
+- **Local daemon:** the lease's SSH port is published on this operator's
+  loopback; the forward connects to it directly.
+- **Remote host:** the container port lives on the remote host. The forward
+  connects to the operator-side end of the lease tunnel the provider already
+  established, so the remote host's loopback is never probed from here.
+
+`--unpublish` asks the owner to stop through its own private control socket and
+removes its record; `crabbox stop` reaps every forward a lease still owns before
+removing the container. A pid is never signalled, so a recycled pid cannot be
+hit. A record whose owner lock is free is stale and is removed rather than
+reported, except a record left by a teardown that could not be proven: that one
+is retained as `failed`, reported by `ports`, and cleared by `--unpublish` only
+once nothing is listening on its operator-side port.
+
+`--expose <port>` at lease creation remains the alternative: `nerdctl` publishes
+that port on the daemon's loopback when the container starts, `crabbox ports`
+lists it, and no owner process is needed. It cannot be changed afterwards, which
+is why `--publish` exists for a running lease.
+
+Published forwards need a Unix operator; on Windows `--publish`/`--unpublish`
+are refused and `ports` still lists `nerdctl`'s mappings.
 
 ## Refusals — measured limits only
 
