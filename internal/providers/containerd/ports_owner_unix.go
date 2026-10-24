@@ -69,7 +69,26 @@ func lockForwardOwner(path string) (func(), error) {
 // inside the unix socket length limit, and it is per-uid so other users cannot
 // connect to an owner.
 func forwardControlDir() (string, error) {
-	return filepath.Join(os.TempDir(), "crabbox-forward-"+strconv.Itoa(os.Getuid())), nil
+	dir := filepath.Join(os.TempDir(), "crabbox-forward-"+strconv.Itoa(os.Getuid()))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", core.Exit(5, "create the forward control directory %s: %v", dir, err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return "", core.Exit(5, "inspect the forward control directory %s: %v", dir, err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", core.Exit(5, "the forward control path %s is not a private directory", dir)
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); !ok || int(stat.Uid) != os.Getuid() {
+		return "", core.Exit(5, "the forward control directory %s is not owned by this user", dir)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return "", core.Exit(5, "secure the forward control directory %s: %v", dir, err)
+		}
+	}
+	return dir, nil
 }
 
 // signalForwardOwnerProcess asks the owner to tear its forward down. The owner

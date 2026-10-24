@@ -132,10 +132,10 @@ func TestPublishListAndUnpublishOwnOneForward(t *testing.T) {
 
 	var release func()
 	spawned := 0
-	b.spawnOwner = func(spec, logPath string) (int, <-chan error, error) {
+	b.spawnOwner = func(spec, logPath string) (*forwardOwnerProcess, error) {
 		containerPort, requestedLocal, err := parsePublishSpec(spec)
 		if err != nil {
-			return 0, nil, err
+			return nil, err
 		}
 		if requestedLocal == 0 {
 			t.Fatalf("the local lifecycle test publishes an explicit port, got %q", spec)
@@ -143,7 +143,7 @@ func TestPublishListAndUnpublishOwnOneForward(t *testing.T) {
 		recordPath := strings.TrimSuffix(logPath, ".log") + ".json"
 		release, err = lockForwardOwner(strings.TrimSuffix(logPath, ".log") + ".lock")
 		if err != nil {
-			return 0, nil, err
+			return nil, err
 		}
 		if err := writeForwardRecord(recordPath, publishedForward{
 			LeaseID:       leaseID,
@@ -155,10 +155,10 @@ func TestPublishListAndUnpublishOwnOneForward(t *testing.T) {
 			HostScope:     "local",
 			CreatedAt:     time.Now().UTC(),
 		}); err != nil {
-			return 0, nil, err
+			return nil, err
 		}
 		spawned++
-		return os.Getpid(), make(chan error), nil
+		return &forwardOwnerProcess{pid: os.Getpid(), exited: make(chan error), exitedFlag: &atomic.Bool{}}, nil
 	}
 	b.requestStop = func(control string) error {
 		if control != "control-under-test.sock" {
@@ -682,6 +682,30 @@ func TestUnpublishRetainsAFailedRecordWhileTheListenerIsUp(t *testing.T) {
 	}
 }
 
+// A spawned helper that exits before publishing its record is already reaped
+// by the Wait goroutine; the failure path must not signal its pid.
+func TestForwardOwnerExitBeforeRecordDoesNotSignalTheReapedPid(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	const leaseID = "cbx_0123456789ab"
+	b := testBackend(&recordingRunner{})
+	b.remember(core.LeaseTarget{LeaseID: leaseID, Server: core.Server{Name: "crabbox-test-00000000"}})
+	exited := make(chan error, 1)
+	exited <- errors.New("exit status 1")
+	flag := &atomic.Bool{}
+	flag.Store(true)
+	b.spawnOwner = func(string, string) (*forwardOwnerProcess, error) {
+		return &forwardOwnerProcess{pid: 999999, exited: exited, exitedFlag: flag}, nil
+	}
+	b.terminateOwner = func(int) error {
+		t.Fatal("a reaped owner pid was signalled")
+		return nil
+	}
+	_, err := b.Ports(t.Context(), core.PortsRequest{ID: leaseID, Publish: []string{"41000:3000"}})
+	if err == nil || !strings.Contains(err.Error(), "exited before publishing") {
+		t.Fatalf("err=%v want the owner-exit failure", err)
+	}
+}
+
 // Concurrent --publish calls for one container port must leave exactly one
 // owner: the owner lock, not a pre-check read, is what serializes them.
 func TestConcurrentPublishOfOneContainerPortHasOneOwner(t *testing.T) {
@@ -691,14 +715,14 @@ func TestConcurrentPublishOfOneContainerPortHasOneOwner(t *testing.T) {
 	b.remember(core.LeaseTarget{LeaseID: leaseID, Server: core.Server{Name: "crabbox-test-00000000"}})
 	var mu sync.Mutex
 	var releases []func()
-	b.spawnOwner = func(spec, logPath string) (int, <-chan error, error) {
+	b.spawnOwner = func(spec, logPath string) (*forwardOwnerProcess, error) {
 		containerPort, requestedLocal, err := parsePublishSpec(spec)
 		if err != nil {
-			return 0, nil, err
+			return nil, err
 		}
 		release, err := lockForwardOwner(strings.TrimSuffix(logPath, ".log") + ".lock")
 		if err != nil {
-			return 0, nil, err
+			return nil, err
 		}
 		mu.Lock()
 		releases = append(releases, release)
@@ -707,9 +731,9 @@ func TestConcurrentPublishOfOneContainerPortHasOneOwner(t *testing.T) {
 			LeaseID: leaseID, ContainerPort: containerPort, LocalPort: requestedLocal, OwnerPID: os.Getpid(),
 			Host: "127.0.0.1", HostScope: "local", CreatedAt: time.Now().UTC(),
 		}); err != nil {
-			return 0, nil, err
+			return nil, err
 		}
-		return os.Getpid(), make(chan error), nil
+		return &forwardOwnerProcess{pid: os.Getpid(), exited: make(chan error), exitedFlag: &atomic.Bool{}}, nil
 	}
 	defer func() {
 		for _, release := range releases {

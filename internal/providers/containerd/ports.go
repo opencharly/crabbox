@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -64,7 +65,16 @@ type portMapping struct {
 	Error         string `json:"error,omitempty"`
 }
 
-type spawnForwardOwnerFunc func(spec, logPath string) (int, <-chan error, error)
+// forwardOwnerProcess is one spawned helper. exitedFlag is set by the Wait
+// goroutine the instant the child has been reaped, so a failed publish never
+// signals a pid whose exit was already observed.
+type forwardOwnerProcess struct {
+	pid        int
+	exited     <-chan error
+	exitedFlag *atomic.Bool
+}
+
+type spawnForwardOwnerFunc func(spec, logPath string) (*forwardOwnerProcess, error)
 type stopForwardOwnerFunc func(control string) error
 
 var (
@@ -486,16 +496,18 @@ func (b *backend) startForwardOwner(ctx context.Context, lease core.LeaseTarget,
 	if spawn == nil {
 		spawn = b.spawnForwardOwnerProcess
 	}
-	pid, exited, err := spawn(spec, logPath)
+	process, err := spawn(spec, logPath)
 	if err != nil {
 		return publishedForward{}, err
 	}
+	sawExit := false
 	waitCtx, cancel := context.WithTimeout(ctx, forwardOwnerStartupTimeout)
 	defer cancel()
 	result, err := shared.Poll(waitCtx, 0, forwardOwnerPollInterval, shared.SleepContext,
 		func(context.Context) (publishedForward, error) {
 			select {
-			case exitErr := <-exited:
+			case exitErr := <-process.exited:
+				sawExit = true
 				return publishedForward{}, &forwardOwnerExitError{err: exitErr}
 			default:
 			}
@@ -520,12 +532,11 @@ func (b *backend) startForwardOwner(ctx context.Context, lease core.LeaseTarget,
 		nil,
 	)
 	if err != nil {
-		select {
-		case <-exited:
-			// The helper already exited; its pid cannot be recycled until the
-			// Wait goroutine reaps it, so there is nothing to stop.
-		default:
-			if stopErr := b.terminateOwnerProcess(pid); stopErr != nil {
+		// Signal only a helper whose exit was NOT observed: cmd.Wait reaps the
+		// child before delivering on exited, and a reaped pid may already belong
+		// to another process. The atomic flag narrows the reap/deliver window.
+		if !sawExit && !process.exitedFlag.Load() {
+			if stopErr := b.terminateOwnerProcess(process.pid); stopErr != nil {
 				err = errors.Join(err, stopErr)
 			}
 		}
@@ -534,14 +545,14 @@ func (b *backend) startForwardOwner(ctx context.Context, lease core.LeaseTarget,
 	return result.Value, nil
 }
 
-func (b *backend) spawnForwardOwnerProcess(spec, logPath string) (int, <-chan error, error) {
+func (b *backend) spawnForwardOwnerProcess(spec, logPath string) (*forwardOwnerProcess, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return 0, nil, core.Exit(2, "resolve the crabbox executable for the forward owner: %v", err)
+		return nil, core.Exit(2, "resolve the crabbox executable for the forward owner: %v", err)
 	}
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		return 0, nil, core.Exit(2, "open the forward owner log %s: %v", logPath, err)
+		return nil, core.Exit(2, "open the forward owner log %s: %v", logPath, err)
 	}
 	cmd := exec.Command(exe, os.Args[1:]...)
 	cmd.Env = withEnv(os.Environ(), map[string]string{
@@ -551,12 +562,17 @@ func (b *backend) spawnForwardOwnerProcess(spec, logPath string) (int, <-chan er
 	detachForwardOwner(cmd)
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
-		return 0, nil, core.Exit(5, "start the forward owner: %v", err)
+		return nil, core.Exit(5, "start the forward owner: %v", err)
 	}
 	_ = logFile.Close()
 	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
-	return cmd.Process.Pid, exited, nil
+	exitedFlag := &atomic.Bool{}
+	go func() {
+		waitErr := cmd.Wait()
+		exitedFlag.Store(true)
+		exited <- waitErr
+	}()
+	return &forwardOwnerProcess{pid: cmd.Process.Pid, exited: exited, exitedFlag: exitedFlag}, nil
 }
 
 func (b *backend) terminateOwnerProcess(pid int) error {
