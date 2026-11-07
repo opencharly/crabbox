@@ -47,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Wait for triggering PR to merge (bounded readiness probe)
-        uses: actions/github-script@v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0, node24
         env:
           # R3: no unnamed magic numbers. The readiness window and the poll interval are
           # named and config-sourced here, so the bound is auditable rather than inline.
@@ -90,5 +90,5 @@ jobs:
       github.event_name == 'push' ||
       github.event.workflow_run.conclusion == 'success'
     needs: wait-for-merge
-    uses: opencharly/.github/.github/workflows/tag-on-merge.yml@main
+    uses: opencharly/.github/.github/workflows/tag-on-merge.yml@bd1e195cadfce40e09719d99a16f7353e1aa27bd # opencharly/.github main @ 2026-11-07
     secrets: inherit
